@@ -1,0 +1,18 @@
+[package]
+name = "coderadar-adapters"
+description = "CodeRadar Studio Layer 3 (Interface Adapters): presenters and DTO translators."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Layer 3 depends inward on Layers 2 and 1 only. It must never depend on the
+# outermost `coderadar-infrastructure` crate.
+[dependencies]
+coderadar-domain = { workspace = true }
+coderadar-usecases = { workspace = true }

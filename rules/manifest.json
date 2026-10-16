@@ -1,0 +1,199 @@
+{
+  "ruleset_version": "2026.1.0-strict",
+  "generated_at": "2026-10-16T21:40:00Z",
+  "total_rules": 19,
+  "categories": ["security", "architecture", "edge_cases", "performance", "pull_requests"],
+  "signature": "ed25519:8f6a9c12e5d4b7a2c1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8verified_by_coderadar_authority",
+  "rules": [
+    {
+      "id": "SEC-INJ-001",
+      "title": "SQL / Command Injection",
+      "category": "security",
+      "severity": "CRITICAL",
+      "cwe": ["CWE-89", "CWE-78"],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Raw user input concatenated into a query string or shell exec without parameterization."
+    },
+    {
+      "id": "SEC-TOK-002",
+      "title": "Hardcoded Secrets & API Keys",
+      "category": "security",
+      "severity": "CRITICAL",
+      "cwe": ["CWE-798"],
+      "scope": "ast_chunk",
+      "engine": "tier0",
+      "assertion": "High-entropy strings matching API token signatures (AWS, Stripe, JWT secret) in source."
+    },
+    {
+      "id": "SEC-JWT-003",
+      "title": "Unvalidated JWT Header / Alg None",
+      "category": "security",
+      "severity": "CRITICAL",
+      "cwe": ["CWE-347"],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "JWT verification accepting `alg: none` or unverified signature payloads."
+    },
+    {
+      "id": "SEC-XSS-004",
+      "title": "Cross-Site Scripting (Reflected/DOM)",
+      "category": "security",
+      "severity": "HIGH",
+      "cwe": ["CWE-79"],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Unescaped dynamic rendering in HTML/JSX without sanitization."
+    },
+    {
+      "id": "SEC-TLS-005",
+      "title": "Permissive TLS Cipher / Insecure Protocol",
+      "category": "security",
+      "severity": "LOW",
+      "cwe": ["CWE-326"],
+      "scope": "file_module",
+      "engine": "tier0",
+      "assertion": "Ingress or client config accepting TLS 1.0/1.1 or plaintext HTTP fallbacks."
+    },
+    {
+      "id": "ARCH-DEP-001",
+      "title": "The Dependency Rule Violation",
+      "category": "architecture",
+      "severity": "HIGH",
+      "cwe": [],
+      "scope": "file_module",
+      "engine": "tier0",
+      "assertion": "Inner Domain/UseCase module directly imports outer UI/Controller, ORM, or Framework."
+    },
+    {
+      "id": "ARCH-SRP-002",
+      "title": "God Class / SRP Violation",
+      "category": "architecture",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Single class or module handling both business logic, data persistence, and network presentation."
+    },
+    {
+      "id": "ARCH-DIP-003",
+      "title": "Concretion Coupling over Abstraction",
+      "category": "architecture",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "High-level use case instantiates concrete infrastructure adapters instead of depending on abstractions/interfaces."
+    },
+    {
+      "id": "ARCH-BND-004",
+      "title": "Domain Entity Leakage across Boundary",
+      "category": "architecture",
+      "severity": "HIGH",
+      "cwe": [],
+      "scope": "file_module",
+      "engine": "tier1",
+      "assertion": "Internal enterprise domain entities exposed directly as external HTTP/API responses instead of simple DTOs."
+    },
+    {
+      "id": "EDGE-NPE-001",
+      "title": "Null / Undefined Safety Gap",
+      "category": "edge_cases",
+      "severity": "HIGH",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Accessing properties on nullable objects without optional chaining (`?.`) or explicit guard."
+    },
+    {
+      "id": "EDGE-PRM-002",
+      "title": "Unhandled Promise Rejection",
+      "category": "edge_cases",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Asynchronous promise without `.catch()` or `try/catch` block causing unhandled crash."
+    },
+    {
+      "id": "EDGE-BND-003",
+      "title": "Boundary Value Omission (0, Empty, Max)",
+      "category": "edge_cases",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Array indexing or division without bounds/empty check or integer overflow prevention."
+    },
+    {
+      "id": "EDGE-TMO-004",
+      "title": "Missing Network / I/O Timeout",
+      "category": "edge_cases",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "External HTTP/RPC call initiated without timeout configuration or abort signal."
+    },
+    {
+      "id": "PERF-NPO-001",
+      "title": "N+1 Query in Loop",
+      "category": "performance",
+      "severity": "HIGH",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Database query or ORM fetch executed sequentially inside an iteration loop."
+    },
+    {
+      "id": "PERF-HDL-002",
+      "title": "Unreleased Connection Handle",
+      "category": "performance",
+      "severity": "MEDIUM",
+      "cwe": ["CWE-404"],
+      "scope": "file_module",
+      "engine": "tier1",
+      "assertion": "Database connection or file descriptor acquired without guaranteed release in `finally` block."
+    },
+    {
+      "id": "PERF-EVT-003",
+      "title": "Detached Event Listener / Hook Leak",
+      "category": "performance",
+      "severity": "LOW",
+      "cwe": [],
+      "scope": "ast_chunk",
+      "engine": "tier1",
+      "assertion": "Component event listener or subscription not unregistered during unmount lifecycle."
+    },
+    {
+      "id": "PR-SCP-001",
+      "title": "Scope Creep / Bloated PR",
+      "category": "pull_requests",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "git_changeset",
+      "engine": "tier0",
+      "assertion": "PR modifies > 500 lines across unrelated domain boundaries."
+    },
+    {
+      "id": "PR-BRK-002",
+      "title": "Breaking API Contract Change",
+      "category": "pull_requests",
+      "severity": "HIGH",
+      "cwe": [],
+      "scope": "git_changeset",
+      "engine": "tier0",
+      "assertion": "Public method signature altered, removing required parameters without version deprecation."
+    },
+    {
+      "id": "PR-TST-003",
+      "title": "Missing Test Coverage for New Features",
+      "category": "pull_requests",
+      "severity": "MEDIUM",
+      "cwe": [],
+      "scope": "git_changeset",
+      "engine": "tier0",
+      "assertion": "Production code added without accompanying unit or integration test assertions."
+    }
+  ]
+}

@@ -33,6 +33,8 @@ dist/
 build/
 out/
 .next/
+/target/
+**/*.rs.bk
 
 # IDE & Editor files
 .idea/

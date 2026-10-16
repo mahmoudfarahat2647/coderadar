@@ -1,0 +1,21 @@
+[package]
+name = "coderadar-domain"
+description = "CodeRadar Studio Layer 1 (Domain Core): pure enterprise business rules. Depends on `std` only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# INTENTIONALLY EMPTY.
+#
+# The domain core is the innermost circle of the Clean Architecture onion.
+# Per CR-SPEC-02 §2 it MUST depend on `std` only: no external crate, no
+# serialization library, no async runtime, no database driver. Adding anything
+# here is a Dependency Rule violation and is rejected by
+# `scripts/check-architecture.sh` in CI.
+[dependencies]
