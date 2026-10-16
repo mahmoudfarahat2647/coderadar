@@ -28,13 +28,13 @@ Please conduct a thorough, unbiased, and adversarial architectural review of thi
 - Are there any subtle violations of SOLID principles (especially SRP, DIP, or boundary leakage)?
 
 ### 2. Jev Decision Model Integration & Latency Feasibility
-- Is the assumption of 12ms–35ms per-file latency realistic when batching AST chunks over HTTP/IPC?
+- Is the Two-Tier latency model realistic: **10–35 ms/chunk in Mock mode**, and **~0.5–0.6 s/chunk against live Jev** (measured, one decision per request) — i.e. is a "background deep scan that takes minutes and ~$1 per 5,000-file repo" an acceptable scope for the Tier-1 engine? (See CR-SPEC-08 §3–§5 for the authenticated Phase 0 numbers.)
 - Are the proposed JSON schemas for Jev properly constrained to Booleans, Enums, and Floats?
 - Is the Dual-Tier pipeline (Tier 1: Jev Decision -> Tier 2: On-Demand LLM Auto-Fix) sound and cost-effective?
 - How resilient is the fallback mechanism (Built-in Local Mock Server)?
 
 ### 3. Real-Time Radar Canvas Performance
-- Can an HTML5 Canvas or WebGL context handle continuous 360° sweeps and 50–100 animated nodes at 60 FPS without dropping frames or leaking memory?
+- Can an HTML5 Canvas or WebGL context handle continuous 360° sweeps and up to 150 animated nodes at 60 FPS (clustering activates above 150) without dropping frames or leaking memory?
 - Is the polar-to-cartesian coordinate mapping formula mathematically sound and perceptually clear?
 
 ### 4. Scalability & Edge Cases

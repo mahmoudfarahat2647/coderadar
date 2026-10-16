@@ -1,6 +1,6 @@
 # CodeRadar Studio — Delivery Phases
 
-> Companion to [`PRD.md`](./PRD.md). Each phase ends with a **gate**: don't start the next phase until the gate passes.
+> Companion to [`coderadar-specs/01-BRD-AND-MVP-REQUIREMENTS.md`](./coderadar-specs/01-BRD-AND-MVP-REQUIREMENTS.md) and [`coderadar-specs/07-DELIVERY-PHASES.md`](./coderadar-specs/07-DELIVERY-PHASES.md). Each phase ends with a **gate**: don't start the next phase until the gate passes.
 > Effort = focused working days for one developer (double it if you work evenings only).
 
 ## Overview
@@ -11,7 +11,7 @@
 | 1 | Foundation (Clean Architecture skeleton) | 3–4 d | Workspace builds; boundary rules enforced in CI |
 | 2 | Scanner + Tier 0 + Mock engine (CLI) | 5–7 d | CLI scans 5,000 files with correct findings, no OOM |
 | 3 | Tauri shell + dashboard + findings feed | 5–7 d | App shows live findings, filters work |
-| 4 | Polar radar canvas | 4–5 d | 60 FPS with 100 nodes; hover/click linked to feed |
+| 4 | Polar radar canvas | 4–5 d | 60 FPS with up to 150 nodes; hover/click linked to feed |
 | 5 | Jev Tier 1 + privacy layer | 4–5 d | Real Jev results match mock schema; secrets redacted |
 | 6 | Diff modal, safe patching, SQLite history | 5–6 d | Patch safety tests pass; history trend visible |
 | 7 | Hardening, packaging, release v1.0 | 4–5 d | Win/macOS/Linux builds pass smoke test |
@@ -21,16 +21,16 @@
 
 ---
 
-## Phase 0 — Spike & spec cleanup
+## Phase 0 — Spike & spec cleanup ✅ (see `coderadar-specs/08-PHASE-0-SPIKE-AND-DECISIONS.md`)
 **Goal:** remove the biggest unknown before writing real code.
 
-- [ ] Call the Jev API with 10-chunk batches over HTTP/2 from your real network; record latency and payload size
-- [ ] Decide the latency SLA (docs say both 12–30 ms and 12–35 ms)
-- [ ] Choose Tier 1 languages for v1.0 (suggest: TypeScript/JavaScript first)
-- [ ] Fix doc inconsistencies (radar node limit, Markdown export priority)
-- [ ] Create GitHub milestones `Phase 1` … `Phase 7`
+- [x] Call the Jev API with 10-chunk batches over HTTP/2 from your real network; record latency and payload size *(authenticated calls measured: ~0.5–0.6 s/chunk warm, ~$0.00015/chunk — CR-SPEC-08 §3)*
+- [x] Decide the latency SLA *(two-tier: Mock 10–35 ms/chunk instant; live Jev ~0.5–0.6 s/chunk background scan — CR-SPEC-08 §5)*
+- [x] Choose Tier 1 languages for v1.0 *(TypeScript/JavaScript — CR-SPEC-08 §4)*
+- [x] Fix doc inconsistencies (radar node capacity, Markdown export priority, `PRD.md` link — CR-SPEC-08 §5)
+- [x] Verify GitHub milestones `Phase 0` … `Phase 8` *(all 9 already exist — CR-SPEC-08 §7)*
 
-**Gate:** a written benchmark number. If Jev is much slower than 35 ms, Mock-first is still fine, but update the PRD claims.
+**Gate:** a written benchmark number. ✅ PASS — Jev is **~15–20× slower than 35 ms** (measured ~0.5–0.6 s/chunk warm, ~0.9 s cold). Mock-first stays the default and the PRD claims were corrected.
 
 ## Phase 1 — Foundation
 **Goal:** the architecture rules are enforced by the compiler from day one.
@@ -79,7 +79,7 @@
 - [ ] HiDPI scaling, `prefers-reduced-motion`
 - [ ] Clustering above 150 nodes (can move to P1 if tight)
 
-**Gate:** 60 FPS with 100 nodes on a mid-range laptop (DevTools trace).
+**Gate:** 60 FPS with up to 150 nodes (clustering activates above 150) on a mid-range laptop (DevTools trace).
 
 ## Phase 5 — Jev Tier 1 + privacy layer
 **Goal:** swap Mock for real semantic evaluation without touching use cases.

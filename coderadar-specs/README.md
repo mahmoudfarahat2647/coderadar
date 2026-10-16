@@ -15,7 +15,8 @@
 | **04-UNIFIED-REVIEW-SKILLS-MATRIX.md** | استخلاص "الزبدة" وإزالة التكرار من المهارات الـ 6 عبر 5 ركائز تطابق أزرار الواجهة. | [`04-UNIFIED-REVIEW-SKILLS-MATRIX.md`](./04-UNIFIED-REVIEW-SKILLS-MATRIX.md) |
 | **05-UI-UX-AND-POLAR-RADAR-SPEC.md** | المواصفات الرياضية والفيزيائية لرادار الـ 360° Polar Canvas، وهيكلة شاشة Stitch UI. | [`05-UI-UX-AND-POLAR-RADAR-SPEC.md`](./05-UI-UX-AND-POLAR-RADAR-SPEC.md) |
 | **06-INDEPENDENT-AI-REVIEW-PROMPT.md** | البرومبت المخصص لتغذية هذه الملفات لأي نموذج ذكاء اصطناعي آخر لطلب مراجعته المعمارية. | [`06-INDEPENDENT-AI-REVIEW-PROMPT.md`](./06-INDEPENDENT-AI-REVIEW-PROMPT.md) |
-| **07-DELIVERY-PHASES.md** | مراحل التنفيذ الـ 8 من Phase 0 إلى Phase 7 مع الـ Gates ومعايير القبول لكل مرحلة. | [`07-DELIVERY-PHASES.md`](./07-DELIVERY-PHASES.md) |
+| **07-DELIVERY-PHASES.md** | مراحل التنفيذ الـ 9 من Phase 0 إلى Phase 8 مع الـ Gates ومعايير القبول لكل مرحلة. | [`07-DELIVERY-PHASES.md`](./07-DELIVERY-PHASES.md) |
+| **08-PHASE-0-SPIKE-AND-DECISIONS.md** | نتائج Spike قياس زمن استجابة Jev من الشبكة الحقيقية، قرار الـ SLA (Tier 1)، اختيار لغات v1.0، وتصحيحات تناسق الوثائق. | [`08-PHASE-0-SPIKE-AND-DECISIONS.md`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) |
 | **DESIGN.md** | نظام التصميم ومواصفات Supabase Dark Infrastructure وألوان الرموز والخطوط المستخرجة من Stitch. | [`DESIGN.md`](./DESIGN.md) |
 
 ---
