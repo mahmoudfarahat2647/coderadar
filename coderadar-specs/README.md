@@ -15,6 +15,8 @@
 | **04-UNIFIED-REVIEW-SKILLS-MATRIX.md** | استخلاص "الزبدة" وإزالة التكرار من المهارات الـ 6 عبر 5 ركائز تطابق أزرار الواجهة. | [`04-UNIFIED-REVIEW-SKILLS-MATRIX.md`](./04-UNIFIED-REVIEW-SKILLS-MATRIX.md) |
 | **05-UI-UX-AND-POLAR-RADAR-SPEC.md** | المواصفات الرياضية والفيزيائية لرادار الـ 360° Polar Canvas، وهيكلة شاشة Stitch UI. | [`05-UI-UX-AND-POLAR-RADAR-SPEC.md`](./05-UI-UX-AND-POLAR-RADAR-SPEC.md) |
 | **06-INDEPENDENT-AI-REVIEW-PROMPT.md** | البرومبت المخصص لتغذية هذه الملفات لأي نموذج ذكاء اصطناعي آخر لطلب مراجعته المعمارية. | [`06-INDEPENDENT-AI-REVIEW-PROMPT.md`](./06-INDEPENDENT-AI-REVIEW-PROMPT.md) |
+| **07-DELIVERY-PHASES.md** | مراحل التنفيذ الـ 8 من Phase 0 إلى Phase 7 مع الـ Gates ومعايير القبول لكل مرحلة. | [`07-DELIVERY-PHASES.md`](./07-DELIVERY-PHASES.md) |
+| **DESIGN.md** | نظام التصميم ومواصفات Supabase Dark Infrastructure وألوان الرموز والخطوط المستخرجة من Stitch. | [`DESIGN.md`](./DESIGN.md) |
 
 ---
 
