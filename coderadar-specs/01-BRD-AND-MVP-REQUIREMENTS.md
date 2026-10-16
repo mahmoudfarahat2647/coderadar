@@ -50,7 +50,7 @@
 
 ### FR-04: Tier 1 Semantic Rule Evaluation
 - Every code chunk is evaluated via typed assertion schema.
-- Latency per file target: amortized 12ms–35ms per chunk via persistent HTTP/2 batching (verified empirically via network spike).
+- Latency target: **10–35 ms per chunk** under the local **Mock engine**; **≤ 500 ms per batched decision request** (p95) and **≈ 16–59 ms per chunk amortized** over a batch of 10 against **live Jev** on a warm HTTP/2 connection (vendor model floor 70 ms/request). See [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3 — the earlier "12–35 ms per chunk against live Jev" claim is not supported and was corrected.
 - Response parsing yields structured `FindingDTO` containing file, verified AST chunk line range (e.g. `lines 35-85`) or exact line when resolved by Tier 0, CWE id, confidence, and rule metadata resolved locally from `manifest.json`.
 - Strict Zero Text Generation: Semantic engine returns exclusively Enums, Booleans, and Numbers.
 
@@ -63,6 +63,10 @@
 ### FR-06: Local Persistence & Scan History
 - Local **SQLite** database records every scan session asynchronously.
 - Tracks project quality trends over time (e.g., Clean Architecture compliance increased from 88% to 94.2%).
+
+### FR-07: Markdown Report Export
+- The user can export the current scan (findings, severities, CWE tags, radar metrics, and scan metadata) as a structured **Markdown** report.
+- Priority: **P1 within MVP (v1.0)**, delivered in Phase 7. This requirement backs the `F8` scope-matrix entry ("Export Report as Markdown") that previously had no corresponding FR — see [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §5.3.
 
 ---
 

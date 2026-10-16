@@ -16,8 +16,10 @@ AST Chunk ---> Prompt Template ---> LLM Token Generation Loop (200-500 words) --
                                                                              ---> Cost: $0.03 - $0.15 per file
 
 [CodeRadar with Jev Decision Engine]
-AST Chunk ---> Typed Assertion Schema ---> Single-Pass Probabilistic Evaluation ---> Latency: 12ms - 35ms
-                                                                               ---> Cost: < $0.0001 (Zero output tokens)
+AST Chunk ---> Typed Assertion Schema ---> Single-Pass Probabilistic Evaluation ---> Latency: 70ms - 500ms/request
+                                                                                    (~16-59ms/chunk amortized;
+                                                                                     12-35ms in Mock mode)
+                                                                               ---> Cost: ~$0.001/chunk (Zero output tokens)
 ```
 
 ### Key Differences:
@@ -156,7 +158,7 @@ flowchart TD
 ```
 
 ### Amortized Latency, Verification Spike & Connection Pooling:
-* Target latency of **12ms–35ms per file** is achieved **in aggregate (amortized)** by pipelining batches of 10 chunks per HTTP/2 request using a persistent connection pool (`reqwest::ClientBuilder::new().http2_prior_knowledge().pool_max_idle_per_host(16)`).
+* **Live latency (corrected by the Phase 0 spike, [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3):** Jev's vendor floor is **70 ms per request** (up to 500 ms), so a realistic amortized figure is **≈ 16–59 ms per chunk** when batching 10 chunks per HTTP/2 request on a warm connection — **not 12–35 ms**. The **12–35 ms band applies to the local Mock engine only.** Pipelining uses a persistent connection pool (`reqwest::ClientBuilder::new().http2_prior_knowledge().pool_max_idle_per_host(16)`); measure against these Phase 0 numbers in Phase 5.
 * **Empirical Verification Requirement:** A 1-day networking spike must be executed against the live Jev API under real WAN network conditions to benchmark real-world latency, payload size, and server response times before finalizing SLA guarantees.
 
 ---

@@ -86,7 +86,7 @@ To maintain a rock-solid 60 FPS without triggering React 19 reconciliation overh
   2. **Foreground Layer (`<canvas id="radar-sweep">`):** Renders only the rotating needle ($\omega = 72^\circ / \text{sec}$, full turn in 5s) and its phosphorescent decay trail (`rgba(234, 179, 8, alpha)` fading over $30^\circ$). Clearing and re-drawing this layer takes $< 0.5\text{ms}$ per frame.
 * **HiDPI / Retina Crispness:** Both canvases scale their internal coordinate buffer by `window.devicePixelRatio` with CSS width/height fixed to maintain crisp rendering on 4K and Retina displays without blurring.
 * **Accessibility (`prefers-reduced-motion`):** If the operating system has reduced motion enabled, the rotating needle animation is stopped, and the canvas displays a subtle static phosphorescent sweep line.
-* **Node Clustering Threshold:** When total findings on screen exceed 150 nodes, close proximity nodes are clustered into small aggregate badges (e.g., `🔴 (4)`) to maintain interactive frame rates and prevent tap/click ambiguity.
+* **Node Capacity & Clustering Threshold:** The 60 FPS rendering target holds for **up to 150 on-screen nodes**. When total findings on screen exceed 150 nodes, close proximity nodes are clustered into small aggregate badges (e.g., `🔴 (4)`) to maintain interactive frame rates and prevent tap/click ambiguity. (This is the single capacity figure referenced by the Phase 4 gate — see [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §5.2.)
 
 ### E. Node Styling by Severity:
 * **Low Risk ($0 < s \le 0.3$):** `#38bdf8` (Sky Blue) - 4px radius.
