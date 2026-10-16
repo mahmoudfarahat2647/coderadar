@@ -16,7 +16,7 @@
 | **Endpoint that worked** | `POST https://openrouter.ai/api/alpha/decisions`, model `~typesafe/jev-latest` (resolves to `typesafe/jev-1.14-20261014`, provider `TypeSafe`) |
 | **Live Jev latency — small chunk (344 in-tokens)** | **~0.46–0.55 s warm**, ~0.73 s cold · p50 ≈ **0.49 s** |
 | **Live Jev latency — representative 12 KB chunk (3,588 in-tokens)** | **~0.55–0.60 s warm**, ~0.86 s cold · p50 ≈ **0.57 s** |
-| **Per-chunk latency for the pipeline** | **≈ 0.5–0.6 s warm (one decision per chunk)** — *not* amortizable to 16–59 ms |
+| **Per-chunk latency for the pipeline** | **≈ 0.5–0.6 s warm (one decision per chunk)** — latency is **not** amortizable across chunks |
 | **Cost** | **$0.042 / 1M input tokens**, output free → **~$0.00015 per 12 KB chunk** |
 | **Full-scan projection (5,000 files ≈ 7,500 chunks)** | **≈ 5–7 min** wall (rate-limit bound) and **≈ $1** |
 | **Spec's original claim** | 12–35 ms/chunk "real-time" |

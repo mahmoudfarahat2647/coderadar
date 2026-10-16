@@ -36,7 +36,7 @@ The user interface is inspired by high-density security platforms (such as Strip
 ```mermaid
 flowchart LR
     Dev["Developer Desktop"] -->|Selects Folder / Git Diff| Scanner["Rust AST & File Scanner"]
-    Scanner -->|AST Chunks + Rule Assertions| Jev["Tier 1: Jev Decision Engine\n(15ms parallel pass)"]
+    Scanner -->|AST Chunks + Rule Assertions| Jev["Tier 1: Jev Decision Engine\n(Mock 10–35 ms/chunk · live Jev ~0.5 s/chunk)"]
     Jev -->|Typed FindingDTOs| UI["React 19 Dashboard & 360° Polar Radar"]
     UI -->|User clicks 'Auto-Fix'| Fixer["Tier 2: On-Demand Patch Engine\n(Free LLM / Local Ollama)"]
     Fixer -->|Inline Code Diff| Modal["Interactive Diff Review Modal"]

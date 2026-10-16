@@ -66,7 +66,7 @@
 
 ### FR-07: Markdown Report Export
 - The user can export the current scan (findings, severities, CWE tags, radar metrics, and scan metadata) as a structured **Markdown** report.
-- Priority: **P1 within MVP (v1.0)**, delivered in Phase 7. This requirement backs the `F8` scope-matrix entry ("Export Report as Markdown") that previously had no corresponding FR — see [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §5.3.
+- Priority: **P1 within MVP (v1.0)**, delivered in Phase 7. This requirement backs the `F8` scope-matrix entry ("Export Report as Markdown") that previously had no corresponding FR — see [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §7.3.
 
 ---
 
