@@ -92,7 +92,7 @@
       "severity": "HIGH",
       "cwe": [],
       "scope": "file_module",
-      "engine": "tier1",
+      "engine": "tier0",
       "assertion": "Internal enterprise domain entities exposed directly as external HTTP/API responses instead of simple DTOs."
     },
     {
@@ -152,7 +152,7 @@
       "severity": "MEDIUM",
       "cwe": ["CWE-404"],
       "scope": "file_module",
-      "engine": "tier1",
+      "engine": "tier0",
       "assertion": "Database connection or file descriptor acquired without guaranteed release in `finally` block."
     },
     {

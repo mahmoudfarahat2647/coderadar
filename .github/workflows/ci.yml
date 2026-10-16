@@ -57,3 +57,14 @@ jobs:
         run: cargo test --workspace --all-targets --verbose
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: MSRV build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in sync with `rust-version` in the workspace Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check on the declared MSRV
+        run: cargo check --workspace --all-targets

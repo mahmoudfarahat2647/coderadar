@@ -10,7 +10,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.82"
 license = "MIT"
 repository = "https://github.com/mahmoudfarahat2647/coderadar"
 authors = ["CodeRadar Studio"]

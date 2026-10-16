@@ -1,4 +1,4 @@
-use coderadar_domain::{Finding, FindingCategory};
+use coderadar_domain::Finding;
 
 /// Display-ready polar coordinate for a radar node (presentation model).
 ///
@@ -61,9 +61,4 @@ impl RadarPresenter {
     pub fn project_all(findings: &[Finding]) -> Vec<PolarCoordinate> {
         findings.iter().map(Self::project_to_polar).collect()
     }
-}
-
-/// A pillar's base angle, exposed for tests and the canvas legend.
-pub fn base_angle_for(category: FindingCategory) -> f32 {
-    category.radar_base_angle_deg()
 }

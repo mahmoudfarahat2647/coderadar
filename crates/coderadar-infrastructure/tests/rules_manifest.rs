@@ -1,4 +1,4 @@
-use coderadar_domain::{EvaluationEngine, FindingCategory, Severity};
+use coderadar_domain::{EvaluationEngine, FindingCategory, RuleScope, Severity};
 use coderadar_infrastructure::RuleManifest;
 
 const EXPECTED_RULE_COUNT: usize = 19;
@@ -28,6 +28,18 @@ fn tier_zero_rules_from_phase_two_exist() {
     for id in ["ARCH-DEP-001", "SEC-TOK-002", "SEC-TLS-005"] {
         let rule = manifest.rule_by_id(id).expect("tier 0 rule present");
         assert_eq!(rule.engine, EvaluationEngine::Tier0Static);
+    }
+}
+
+#[test]
+fn file_module_rules_run_on_the_tier_zero_engine() {
+    // CR-SPEC-04 §8: File/Module-scope rules execute on Tier 0
+    // (Tree-sitter + layer map), never on the semantic tier.
+    let manifest = RuleManifest::embedded().unwrap();
+    for id in ["ARCH-DEP-001", "ARCH-BND-004", "PERF-HDL-002"] {
+        let rule = manifest.rule_by_id(id).expect("file/module rule present");
+        assert_eq!(rule.scope, RuleScope::FileModule, "{id} scope");
+        assert_eq!(rule.engine, EvaluationEngine::Tier0Static, "{id} engine");
     }
 }
 

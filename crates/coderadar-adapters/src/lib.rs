@@ -11,6 +11,4 @@ mod dto;
 mod radar;
 
 pub use dto::FindingDTO;
-pub use radar::{
-    base_angle_for, compute_angle_jitter, PolarCoordinate, RadarPresenter, MAX_ANGLE_JITTER_DEG,
-};
+pub use radar::{compute_angle_jitter, PolarCoordinate, RadarPresenter, MAX_ANGLE_JITTER_DEG};
