@@ -16,10 +16,9 @@ AST Chunk ---> Prompt Template ---> LLM Token Generation Loop (200-500 words) --
                                                                              ---> Cost: $0.03 - $0.15 per file
 
 [CodeRadar with Jev Decision Engine]
-AST Chunk ---> Typed Assertion Schema ---> Single-Pass Probabilistic Evaluation ---> Latency: 70ms - 500ms/request
-                                                                                    (~16-59ms/chunk amortized;
-                                                                                     12-35ms in Mock mode)
-                                                                               ---> Cost: ~$0.001/chunk (Zero output tokens)
+AST Chunk ---> Typed Assertion Schema ---> Single-Pass Probabilistic Evaluation ---> Latency: ~0.5-0.6s/chunk (live Jev)
+                                                                                     (measured; 10-35ms in Mock mode)
+                                                                               ---> Cost: ~$0.00015/chunk (Zero output tokens)
 ```
 
 ### Key Differences:
@@ -158,7 +157,9 @@ flowchart TD
 ```
 
 ### Amortized Latency, Verification Spike & Connection Pooling:
-* **Live latency (corrected by the Phase 0 spike, [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3):** Jev's vendor floor is **70 ms per request** (up to 500 ms), so a realistic amortized figure is **≈ 16–59 ms per chunk** when batching 10 chunks per HTTP/2 request on a warm connection — **not 12–35 ms**. The **12–35 ms band applies to the local Mock engine only.** Pipelining uses a persistent connection pool (`reqwest::ClientBuilder::new().http2_prior_knowledge().pool_max_idle_per_host(16)`); measure against these Phase 0 numbers in Phase 5.
+* **Live latency (measured, Phase 0 — see [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3–§5):** authenticated Jev calls measure **~0.5–0.6 s per chunk warm** (~0.9 s cold), **~$0.00015/chunk** — **not 12–35 ms**. The **10–35 ms band applies to the local Mock engine only.** Jev evaluates **one `state` per request**, so per-chunk latency is **not amortizable** by "batching 10 chunks" (questions run in parallel against a single state). Live Jev is therefore a **background deep scan** (~5–7 min and ~$1 for 5,000 files, rate-limited to 1,200 req/min), not an interactive pass. Phase 5 measures against these numbers.
+
+* **Working endpoint & key (correction):** authenticated calls succeeded via **`POST https://openrouter.ai/api/alpha/decisions`** with model **`~typesafe/jev-latest`** (resolved `typesafe/jev-1.14-20261014`), `Authorization: Bearer <key>`. The direct TypeSafe hosts (`api.typesafe.ai/v1/systemone`, `jevtypesafeai.com/api/v1/decide`) require their **own** key formats and reject an OpenRouter key. `JEV_API_KEY` may therefore be an OpenRouter key, not necessarily `jv_live_…`.
 * **Empirical Verification Requirement:** A 1-day networking spike must be executed against the live Jev API under real WAN network conditions to benchmark real-world latency, payload size, and server response times before finalizing SLA guarantees.
 
 ---

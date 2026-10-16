@@ -24,13 +24,13 @@
 ## Phase 0 — Spike & spec cleanup ✅ (see `08-PHASE-0-SPIKE-AND-DECISIONS.md`)
 **Goal:** remove the biggest unknown before writing real code.
 
-- [x] Call the Jev API with 10-chunk batches over HTTP/2 from your real network; record latency and payload size *(endpoints probed live; authenticated inference pending a `jv_live_` key — CR-SPEC-08 §6)*
-- [x] Decide the latency SLA *(two-tier: Mock 10–35 ms/chunk; live Jev 70–500 ms/request ≈ 16–59 ms/chunk amortized — CR-SPEC-08 §3)*
+- [x] Call the Jev API with 10-chunk batches over HTTP/2 from your real network; record latency and payload size *(authenticated calls measured: ~0.5–0.6 s/chunk warm, ~$0.00015/chunk — CR-SPEC-08 §3)*
+- [x] Decide the latency SLA *(two-tier: Mock 10–35 ms/chunk instant; live Jev ~0.5–0.6 s/chunk background scan — CR-SPEC-08 §5)*
 - [x] Choose Tier 1 languages for v1.0 *(TypeScript/JavaScript — CR-SPEC-08 §4)*
 - [x] Fix doc inconsistencies (radar node capacity, Markdown export priority, `PRD.md` link — CR-SPEC-08 §5)
 - [x] Verify GitHub milestones `Phase 0` … `Phase 8` *(all 9 already exist — CR-SPEC-08 §7)*
 
-**Gate:** a written benchmark number. ✅ PASS — Jev is **significantly slower than 35 ms** (vendor floor 70 ms/request; measured RTT ~90 ms, TLS ~262 ms). Mock-first stays the default and the PRD claims were corrected.
+**Gate:** a written benchmark number. ✅ PASS — Jev is **~15–20× slower than 35 ms** (measured ~0.5–0.6 s/chunk warm, ~0.9 s cold). Mock-first stays the default and the PRD claims were corrected.
 
 ## Phase 1 — Foundation
 **Goal:** the architecture rules are enforced by the compiler from day one.

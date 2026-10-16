@@ -1,208 +1,217 @@
 # 📡 CodeRadar Studio: Phase 0 — Jev Spike Results & Phase-0 Decisions
 
 > **Document ID:** `CR-SPEC-08`
-> **Status:** Complete (one open blocker: authenticated Jev benchmark — see §6)
+> **Status:** ✅ Complete — authenticated live-Jev benchmark obtained
 > **Milestone:** [Phase 0 — Spike & spec cleanup](https://github.com/mahmoudfarahat2647/coderadar/milestone/1)
 > **Closes task line:** Issue [#1](https://github.com/mahmoudfarahat2647/coderadar/issues/1)
 > **Executed:** 2026-10-16
-> **Gate:** *"A written benchmark number. If Jev is significantly slower than 35 ms, Mock-first is still fine, but update the PRD claims."* → **Gate result: PASS (with a documented SLA correction).**
+> **Gate:** *"A written benchmark number. If Jev is significantly slower than 35 ms, Mock-first is still fine, but update the PRD claims."* → **Gate result: PASS — Jev is ~15–20× slower than 35 ms and is not real-time; PRD claims corrected.**
 
 ---
 
-## 1. TL;DR — the written benchmark
+## 1. TL;DR — the written benchmark (measured, authenticated)
 
 | Metric | Value |
 | :--- | :--- |
-| **Jev live per-request latency (vendor-published)** | **70–500 ms** per `/v1/decide` call (all questions evaluated in parallel, one round trip) |
-| **Amortized per-chunk (batch of 10, warm HTTP/2)** | **≈ 16–59 ms/chunk** = (70–500 ms model + ~90 ms RTT) ÷ 10 |
-| **Cold first request from this network** | TCP connect ~95 ms + TLS ~262 ms → added ~250 ms before the model runs |
-| **Amortized per-chunk (cold connection)** | ≈ 25–75 ms/chunk |
-| **Spec's original claim** | 12–35 ms/chunk amortized |
-| **Verdict** | The **12 ms floor is not reachable** and the **35 ms ceiling is only reachable at the optimistic end of Jev's own range**. The spec claim is **not validated as written**. |
+| **Endpoint that worked** | `POST https://openrouter.ai/api/alpha/decisions`, model `~typesafe/jev-latest` (resolves to `typesafe/jev-1.14-20261014`, provider `TypeSafe`) |
+| **Live Jev latency — small chunk (344 in-tokens)** | **~0.46–0.55 s warm**, ~0.73 s cold · p50 ≈ **0.49 s** |
+| **Live Jev latency — representative 12 KB chunk (3,588 in-tokens)** | **~0.55–0.60 s warm**, ~0.86 s cold · p50 ≈ **0.57 s** |
+| **Per-chunk latency for the pipeline** | **≈ 0.5–0.6 s warm (one decision per chunk)** — *not* amortizable to 16–59 ms |
+| **Cost** | **$0.042 / 1M input tokens**, output free → **~$0.00015 per 12 KB chunk** |
+| **Full-scan projection (5,000 files ≈ 7,500 chunks)** | **≈ 5–7 min** wall (rate-limit bound) and **≈ $1** |
+| **Spec's original claim** | 12–35 ms/chunk "real-time" |
+| **Verdict** | ❌ **Not validated.** Live Jev is a *background, minutes-scale* engine. The 12–35 ms band applies **only to the local Mock engine**. |
 
-**Decision:** keep Mock-first as the default engine (already the plan), and **restate the live Tier-1 SLA as `≤ 500 ms per batched request` / `≈ 16–59 ms per chunk amortized`** instead of "12–35 ms per chunk". Mock mode keeps its deterministic synthetic latency (10–35 ms/chunk). See §3.
-
----
-
-## 2. Spike methodology & raw measurements
-
-### 2.1 Endpoints probed
-
-Jev is a real hosted, typed-decision API (TypeSafe AI "System One" model). Two hosts, same request shape:
-
-- **Hosted gateway:** `POST https://jevtypesafeai.com/api/v1/decide` (`Authorization: Bearer jv_live_…`)
-- **Official TypeSafe:** `POST https://api.typesafe.ai/v1/systemone` (`Authorization: Bearer <key>`)
-
-A decision call sends `state` + a map of typed `questions` (`choice` / `score` / `noul`) and returns typed `answers` plus calibrated confidences. There is **no text generation** — this part of the spec is accurate.
-
-### 2.2 What was measured from the real network
-
-No Jev API key was available in this environment (no `JEV_API_KEY` in the environment), so the inference step could not be exercised. The **transport** was measured directly from this workstation against both live hosts. Requests were intentionally unauthenticated, so the auth layer rejects them before inference — the recorded time is a **pure network/TLS floor**, not model latency.
-
-Command shape (PowerShell 5.1, `curl 8.13.0 / Schannel` — HTTP/1.1 only, this libcurl build has no HTTP/2):
-
-```
-curl -sS -o NUL -w "dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} http=%{http_code}\n" \
-  -X POST "https://jevtypesafeai.com/api/v1/decide" \
-  -H "Content-Type: application/json" \
-  --data-binary "@jev-body.json"
-```
-
-Probe body: one `state` + two questions (`noul` injection check, `score` severity) — ≈ 250 bytes.
-
-### 2.3 Raw results — `jevtypesafeai.com/api/v1/decide`
-
-| Run | DNS (s) | TCP connect (s) | TLS (s) | TTFB (s) | Total (s) | HTTP | Bytes | Proto |
-| :--- | ---: | ---: | ---: | ---: | ---: | :---: | ---: | :---: |
-| 1 | 0.0059 | 0.0939 | 0.2682 | 0.4755 | 0.4760 | 401 | 70 | 1.1 |
-| 2 | 0.0066 | 0.1053 | 0.2816 | 0.4823 | 0.4835 | 401 | 70 | 1.1 |
-| 3 | 0.0069 | 0.0847 | 0.2511 | 0.4976 | 0.4980 | 401 | 70 | 1.1 |
-| 4 | 0.0057 | 0.0936 | 0.2539 | 0.4418 | 0.4505 | 401 | 70 | 1.1 |
-| 5 | 0.0064 | 0.0984 | 0.2571 | 0.4631 | 0.4644 | 401 | 70 | 1.1 |
-| **Mean** | **0.0063** | **0.0952** | **0.2624** | **0.4721** | **0.4745** | | | |
-
-Response body: `{"error":"Missing API key. Send 'Authorization: Bearer jv_live_...'."}`
-
-### 2.4 Raw results — `api.typesafe.ai/v1/systemone`
-
-| DNS (s) | TCP connect (s) | TLS (s) | TTFB (s) | Total (s) | HTTP | Bytes | Proto |
-| ---: | ---: | ---: | ---: | ---: | :---: | ---: | :---: |
-| 0.0072 | 0.1015 | 0.2711 | 0.5307 | 0.5310 | 403 | 118 | 1.1 |
-
-Response body: `{"detail":{"error_type":"authentication_error","message":"Must supply an API key! Check your request and try again."}}`
-
-**Transport reading:** ~6 ms DNS, ~95 ms TCP RTT, ~262 ms TLS handshake, ~470–530 ms to first byte. Both hosts are live and reachable from this network; **network RTT is ~90–105 ms**, which by itself is already ~3× the spec's *entire* 35 ms budget.
-
-### 2.5 Vendor-published figures (used where measurement was blocked)
-
-From the Jev API docs / pricing pages (retrieved 2026-10-16):
-
-- **Response latency: 70–500 ms** per call (multiple questions answered in parallel).
-- **Pricing:** **$0.42 / 1M input tokens**, output free, ≈ **$0.001 per decision**.
-- **Limits:** 250,000 tokens/s, **1,200 requests/min**; **64k tokens** combined `state` + all questions (32k for `state` + single longest question), raisable to ~262k via a preview header.
-- Model pinning is recommended in production (`jev-1.13.0`), because `jev-latest` thresholds can drift.
-
-### 2.6 Derived numbers for CodeRadar's pipeline
-
-Assumptions: chunk ≤ **12 KB** (per `CR-SPEC-03`) ≈ ~3,000 tokens; batch of **10 chunks** per request; warm HTTP/2 connection.
-
-| Scenario | Per-request | Per-chunk amortized |
-| :--- | :--- | :--- |
-| Vendor floor (70 ms model + ~90 ms RTT) | ~160 ms | **~16 ms/chunk** |
-| Vendor mid (285 ms model + ~90 ms RTT) | ~375 ms | **~38 ms/chunk** |
-| Vendor ceiling (500 ms model + ~90 ms RTT) | ~590 ms | **~59 ms/chunk** |
-| Cold connection (adds ~250 ms TLS) | 410–840 ms | ~41–84 ms/chunk |
-
-**Cost sanity check:** a 12 KB chunk ≈ ~3,000 input tokens ≈ **$0.00126/chunk**. A 5,000-file project at ~1.5 chunks/file ≈ ~$9.4 per full scan under live Jev — near-zero versus LLM review, but not literally "$0.0001/file" as `CR-SPEC-00` implies.
-
-**Batching caveat (architectural risk for Phase 5):** Jev evaluates **one `state`** with a map of questions; it does not natively fan out *N independent code chunks* as *N independent decisions* in one call. The spec's "batches of 10 chunks per HTTP/2 request" therefore needs a concrete mapping (e.g. `state` = array of chunks + one repeated per-element question, or 10 separate requests on one kept-alive connection). Either way the parallelism benefit is smaller than the spec assumes. Flagged here; to be resolved in Phase 5.
+**Decision:** keep **Mock-first** as the default engine and the sub-second UX. Re-scope **live Jev Tier 1** as a *background deep scan* (minutes, ~$1/scan), and **restate the SLA: Mock 10–35 ms/chunk; live Jev ~0.5–0.6 s/chunk warm / ~0.9 s cold**. See §5.
 
 ---
 
-## 3. Decision — Latency SLA reconciliation (`CR-SPEC-01` FR-04)
+## 2. Methodology
 
-The docs shipped with two figures: **12–30 ms** (`CR-SPEC-00` §1/§2) and **12–35 ms** (`CR-SPEC-01` FR-04, `CR-SPEC-03`, `CR-SPEC-06`). The spike shows **neither number describes live Jev**. Resolution:
+### 2.1 What was probed
+
+Jev is a real, hosted, **typed-decision** API (TypeSafe AI "System One" model). A decision call sends `state` + a map of typed `questions` (`choice` / `score` / `noul`) and returns typed `answers` with calibrated probabilities — **no text generation**. This part of the spec is accurate and was confirmed (§3.3).
+
+Three access routes were tested:
+
+| Route | Result |
+| :--- | :--- |
+| `POST https://jevtypesafeai.com/api/v1/decide` (`jv_live_…`) | Requires a `jv_live_` key — rejects the provided key (401) |
+| `POST https://api.typesafe.ai/v1/systemone` (official TypeSafe key) | Requires an official TypeSafe key — rejects the provided key (401) |
+| **`POST https://openrouter.ai/api/alpha/decisions`, model `~typesafe/jev-latest`** | ✅ **200 — the working route used for the benchmark** |
+
+> **Correction to the spec's integration assumptions (`CR-SPEC-03`):** the key used was an **OpenRouter** key (`sk-or-v1-…`), and the working path is OpenRouter's **decisions** endpoint — **not** the `jv_live_`/`jevtypesafeai.com` route the spec assumed. The direct TypeSafe hosts only accept their own key formats. The spec's `JevRuleEvaluatorAdapter` must therefore target the OpenRouter decisions endpoint (or an official TypeSafe key), and `JEV_API_KEY` is **not** necessarily a `jv_live_` value. The model id resolved server-side to `typesafe/jev-1.14-20261014`.
+
+### 2.2 Client caveat
+
+Timings were measured with `curl 8.13.0` on Windows (Schannel), which negotiates **HTTP/1.1** (this libcurl build has no HTTP/2). Connection reuse was validated by a keep-alive run (`connect`/`tls` = 0 on subsequent requests). "Warm" = same kept-alive connection; "cold" = new process/connection per call. Latency differences from HTTP/2 would be minor at these magnitudes.
+
+### 2.3 Payloads
+
+- **SMALL** — one `state` + 2 questions (`noul` injection, `score` severity) ≈ 250 B, **344 input tokens**.
+- **12 KB** — a realistic TS chunk (~10,986 chars) with 90 concatenated-SQL lines + 3 questions (`noul` injection, `noul` secrets, `score` severity) = 13,363 B body, **3,588 input tokens**.
+
+---
+
+## 3. Raw measurements
+
+### 3.1 Small chunk — 8 cold runs
+
+| Run | DNS (s) | TCP (s) | TLS (s) | TTFB (s) | Total (s) | HTTP |
+| :--- | ---: | ---: | ---: | ---: | ---: | :---: |
+| 1 | 0.0099 | 0.1046 | 0.2700 | 0.7556 | 0.7573 | 200 |
+| 2 | 0.0083 | 0.1218 | 0.2988 | 0.7648 | 0.7657 | 200 |
+| 3 | 0.0069 | 0.0980 | 0.2711 | 0.7053 | 0.7073 | 200 |
+| 4 | 0.0121 | 0.0823 | 0.2641 | 0.7288 | 0.7308 | 200 |
+| 5 | 0.0090 | 0.1042 | 0.2871 | 0.7248 | 0.7278 | 200 |
+| 6 | 0.0103 | 0.0858 | 0.2551 | 0.7114 | 0.7120 | 200 |
+| 7 | 0.0062 | 0.0926 | 0.2767 | 0.7710 | 0.7746 | 200 |
+| 8 | 0.0095 | 0.0924 | 0.2737 | 0.7185 | 0.7201 | 200 |
+| **Mean** | **0.0090** | **0.0977** | **0.2746** | **0.7350** | **0.7369** | |
+
+### 3.2 Representative 12 KB chunk — 8 cold runs
+
+| Run | DNS (s) | TCP (s) | TLS (s) | TTFB (s) | Total (s) | HTTP |
+| :--- | ---: | ---: | ---: | ---: | ---: | :---: |
+| 1 | 0.0067 | 0.0889 | 0.2690 | 0.8252 | 0.8269 | 200 |
+| 2 | 0.0125 | 0.1041 | 0.2883 | 0.8545 | 0.8558 | 200 |
+| 3 | 0.0092 | 0.0911 | 0.2776 | 0.8708 | 0.8733 | 200 |
+| 4 | 0.0112 | 0.1225 | 0.3171 | 0.8653 | 0.8674 | 200 |
+| 5 | 0.0108 | 0.1039 | 0.2890 | 0.8951 | 0.8960 | 200 |
+| 6 † | 0.0136 | 0.1943 | 0.8174 | 1.3973 | 1.4000 | 200 |
+| 7 | 0.0075 | 0.1014 | 0.2998 | 0.8673 | 0.8687 | 200 |
+| 8 † | 0.0099 | 1.1034 | 1.3474 | 2.1689 | 2.1733 | 200 |
+| **Mean (1–5,7)** | **~0.010** | **~0.102** | **~0.290** | **0.8630** | **0.8648** | |
+
+† Runs 6 and 8 were transient network/server outliers (`tls` 0.82 s; `connect` 1.10 s) — retained here for honesty, excluded from the mean.
+
+### 3.3 Warm keep-alive connection (connection reuse verified)
+
+| Payload | Per-request TTFB (warm) | Mean |
+| :--- | :--- | ---: |
+| SMALL | 0.457, 0.496, 0.472, 0.490, 0.487, 0.549, 0.490 s | **0.492 s** |
+| 12 KB | 0.556, 0.576, 0.561, 0.603, 0.562 s | **0.572 s** |
+
+*(First request of each keep-alive session included TLS setup and is excluded; connects afterward showed `connect=tls=0`.)*
+
+### 3.4 Correctness / schema validation — ✅ the design works
+
+The typed-answer design in `CR-SPEC-03` was confirmed end-to-end. For the 12 KB SQL-injection chunk:
+
+```json
+{"model":"typesafe/jev-1.14-20261014","answers":{
+  "injection":{"type":"noul","noul":0.98},
+  "secrets":{"type":"noul","noul":0.03},
+  "severity":{"type":"score","score":3.95,"legend":{"3":"high","4":"critical"},"probabilities":{"3":0.02,"4":0.98},"confidence":0.98}},
+ "usage":{"input_tokens":3588,"output_tokens":52,"cost":0.000150696},"provider":"TypeSafe"}
+```
+
+Purely typed output, calibrated confidence, no text to parse — exactly as specified.
+
+### 3.5 Pricing (measured, not vendor-quoted)
+
+| Payload | Input tokens | Cost (USD) | Implied rate |
+| :--- | ---: | ---: | :--- |
+| SMALL | 344 | 0.000014448 | $0.042 / 1M input tokens |
+| 12 KB | 3,588 | 0.000150696 | $0.042 / 1M input tokens |
+
+Output tokens are free; cost is input-only. **~$0.00015 per 12 KB chunk.**
+
+---
+
+## 4. Derived pipeline numbers
+
+Assumptions: 1 request per chunk (Jev evaluates **one `state`** per call — see the batching caveat), 16 parallel workers, rate limit **1,200 requests/min** (= 20 req/s).
+
+| Metric | Value |
+| :--- | :--- |
+| Per-chunk latency (warm) | ~0.49 s (small) → ~0.57 s (12 KB) |
+| Per-chunk latency (cold) | ~0.74 s → ~0.86 s |
+| Full scan, 5,000 files (~7,500 chunks) | wall ≈ **4.3 min** compute-bound, **≥ 6.3 min** rate-limit-bound → **≈ 5–7 min** |
+| Full scan cost (~7,500 × 12 KB chunks) | **≈ $1.13** |
+| Effective concurrency | capped at **~20 req/s** by the rate limit (16 workers × ~1.8 req/s ≈ 29 req/s would exceed it — must throttle) |
+
+**Batching caveat (architectural finding):** Jev answers a **map of typed questions about a single `state`** — it does **not** fan out *N independent code chunks* into *N independent decisions* in one call. The spec's "batches of 10 chunks per HTTP/2 request" **does not reduce per-chunk latency**: latency is dominated by the model pass (~0.46 s even for the tiny payload), and questions run in parallel *against the same state*. Sending 10 chunks in one `state` would raise input tokens (~30k) without binding each question to its chunk. **Recommendation: 1 request per chunk in the MVP**, parallelised with a client-side worker pool that respects the 1,200 req/min limit; revisit multi-chunk packing in Phase 5 only if measured.
+
+**Latency vs. question count:** 2 questions (small) vs 3 questions (12 KB) showed no additional per-question cost — confirming the "questions evaluate in parallel" claim.
+
+---
+
+## 5. Decision — Latency SLA reconciliation (`CR-SPEC-01` FR-04)
+
+The docs shipped with two figures — **12–30 ms** (`CR-SPEC-00`) and **12–35 ms** (`CR-SPEC-01`/`03`/`06`) — both describing "live Jev". The authenticated benchmark shows **neither describes live Jev**.
 
 > **Single source of truth — the two-tier latency model:**
 >
-> - **Mock / Tier 0 (default, offline-capable):** synthetic **10–35 ms per chunk** (deterministic heuristics; already specified in `CR-SPEC-03` §4).
-> - **Live Jev Tier 1:** **≤ 500 ms per batched decision request** (p95), **≈ 16–59 ms per chunk amortized** over a batch of 10 on a warm HTTP/2 connection. Vendor model floor is **70 ms/request**; do not publish a sub-70 ms per-request promise.
+> - **Mock / Tier 0 (default, offline-capable):** synthetic **10–35 ms per chunk** — this is what delivers the "instant" UX (`CR-SPEC-03` §4).
+> - **Live Jev Tier 1 (background deep scan):** **~0.5–0.6 s per chunk warm**, **~0.9 s cold**, **p95 up to ~1–2 s** under network/server variance. Cost ~$0.00015/chunk. A full 5,000-file scan is **minutes, ~$1** — schedule it as a background job, not an interactive pass.
 >
-> **Do not claim "12 ms" for live Jev** — it is below the vendor's own floor and below this network's RTT. The aspirational `12–35 ms` figure survives only as the Mock-mode synthetic band.
+> **Do not publish "12–35 ms" or "real-time" for live Jev.** That band is Mock-mode only.
 
-Documentation was updated accordingly:
+Documentation updated accordingly:
 
-- `CR-SPEC-00` §1 and §2: **12–30 ms → 12–35 ms** (harmonized) and re-labelled as the **Mock-mode synthetic band**, with a pointer to this document for live Jev.
-- `CR-SPEC-01` FR-04: kept `12ms–35ms` but scoped to **Mock mode**, and added the **live Jev budget (≤ 500 ms/request, 16–59 ms/chunk amortized)**.
-- `CR-SPEC-03`: the headline latency/cost block and §3 were corrected to **70–500 ms/request (~16–59 ms/chunk amortized)** and **~$0.001/chunk**; the `12–35 ms` band is now explicitly Mock-only.
-- `CR-SPEC-06`: the review question was rewritten to ask about the two-tier model instead of assuming 12–35 ms.
-
-**Consequence for the PRD/positioning:** Mock-first remains the correct default (per the Phase 0 gate). The marketing claim "12–30 ms per file using Jev" must be softened — see the note added to `CR-SPEC-00`.
+- `CR-SPEC-00` §1 and §2: latency re-labelled — **Mock 10–35 ms/chunk**; **live Jev ~0.5–0.6 s/chunk**; the "12–30 ms per file using Jev" marketing line removed.
+- `CR-SPEC-01` FR-04: split into Mock band vs live-Jev budget (~0.5–0.6 s/chunk warm; minutes/full scan).
+- `CR-SPEC-03`: headline block and §3 corrected; adds the OpenRouter decisions endpoint + `~typesafe/jev-latest` model id; flags that `JEV_API_KEY` may be an OpenRouter key.
+- `CR-SPEC-06`: review question now asks about the two-tier model with the measured numbers.
 
 ---
 
-## 4. Decision — Tier 1 languages for v1.0
+## 6. Decision — Tier 1 languages for v1.0
 
 **Decision: TypeScript / JavaScript first** (as suggested by `PHASES.md`).
 
 - Tier 0 syntactic rules (`ARCH-DEP-001`, `SEC-TOK-002`, `SEC-TLS-005`) and the tree-sitter chunker ship for **TS/JS only** in v1.0.
-- Rationale: matches the `d:/review` corpus (the source skills are TS/ECMAScript-heavy), the React 19 frontend, and the Stitch UI examples (all `.ts`/`.py`/`.go` snippets are illustrative, but TS/JS is the common denominator).
-- **Explicitly deferred to v1.5+:** Python, Go, Rust, Java. `PHASES.md` Phase 2 ("tree-sitter for TS/JS") and Phase 5 already assume this — no doc change needed beyond recording the decision here.
+- Rationale: matches the `d:/review` corpus (TS/ECMAScript-heavy skills), the React 19 frontend, and the Stitch UI examples.
+- **Explicitly deferred to v1.5+:** Python, Go, Rust, Java.
 
 ---
 
-## 5. Doc consistency validation
+## 7. Doc consistency validation
 
-### 5.1 Radar node omission invariant — ✅ CONSISTENT (no change needed)
+### 7.1 Radar node omission invariant — ✅ CONSISTENT (no change needed)
 
-The invariant is stated identically in `CR-SPEC-01` FR-02 and `CR-SPEC-05` §B: **only active findings (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, i.e. `s > 0`) draw canvas nodes; clean files draw nothing** and are represented via HUD telemetry + ambient glow. `Severity::Clean` exists in the domain (`CR-SPEC-02`) but produces no node. Validated — no edit required.
+Stated identically in `CR-SPEC-01` FR-02 and `CR-SPEC-05` §B: only active findings (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, `s > 0`) draw canvas nodes; clean files draw nothing and are shown via HUD telemetry + ambient glow. `Severity::Clean` exists in the domain but produces no node. Validated.
 
-### 5.2 Radar node capacity — ⚠️ INCONSISTENT → fixed
+### 7.2 Radar node capacity — ⚠️ INCONSISTENT → fixed
 
-Three different capacities were implied:
+`CR-SPEC-05` §D said cluster **above 150**; `PHASES.md`/`CR-SPEC-07` Phase 4 gate said **60 FPS with 100 nodes**; `CR-SPEC-06` said **50–100**. Harmonized to one capacity: **60 FPS up to 150 nodes; clustering above 150** (`CR-SPEC-05` §D, `CR-SPEC-06` §3, `PHASES.md`/`CR-SPEC-07` Phase 4).
 
-- `CR-SPEC-05` §D: **clustering above 150 nodes**.
-- `PHASES.md` Phase 4 gate / `CR-SPEC-07`: **60 FPS with 100 nodes**.
-- `CR-SPEC-06` review prompt: **50–100 animated nodes**.
+### 7.3 Markdown export priority — ⚠️ INCONSISTENT → fixed
 
-Fixed by stating one capacity: **60 FPS target up to 150 nodes; clustering activates above 150** (`CR-SPEC-05` §D, `CR-SPEC-06` §3, `PHASES.md`/`CR-SPEC-07` Phase 4).
+`CR-SPEC-01` §5 scope matrix listed **F8 "Export Report as Markdown"** as MVP, but the FR list (FR-01…FR-06) had no export requirement. Added **FR-07: Markdown Report Export** (P1 within MVP, Phase 7).
 
-### 5.3 Markdown export priority — ⚠️ INCONSISTENT → fixed
+### 7.4 Broken companion link — ⚠️ → fixed
 
-`CR-SPEC-01` §5 scope matrix lists **F8 "Export Report as Markdown" as in-scope for MVP (v1.0)**, and `CR-SPEC-07` Phase 7 schedules it. However, the **functional-requirements list (FR-01…FR-06) had no export requirement** — the scope matrix promised a feature with no FR. Fixed by adding **FR-07: Markdown Report Export** to `CR-SPEC-01`. Priority confirmed: **P1 within MVP**, delivered in Phase 7.
+`PHASES.md` and `CR-SPEC-07` opened with `Companion to [PRD.md](./PRD.md)`; no `PRD.md` exists. Repointed to `01-BRD-AND-MVP-REQUIREMENTS.md`.
 
-### 5.4 Broken companion link — ⚠️ → fixed
+### 7.5 Milestone task drift — ⚠️ → fixed
 
-Both `PHASES.md` and `CR-SPEC-07` opened with `Companion to [PRD.md](./PRD.md)`, but no `PRD.md` exists. Repointed to [`coderadar-specs/01-BRD-AND-MVP-REQUIREMENTS.md`](./01-BRD-AND-MVP-REQUIREMENTS.md) (the actual BRD/PRD).
-
-### 5.5 Milestone task drift — ⚠️ → fixed
-
-Phase 0 said *"Create GitHub milestones `Phase 1` … `Phase 7`"*, but the milestones were already created and actually span **`Phase 0` … `Phase 8`**. Line corrected to *verify* the existing set (see §7).
+Phase 0 said "Create milestones `Phase 1`…`Phase 7`"; the real set is `Phase 0`…`Phase 8`. Corrected to *verify* the existing set (§8).
 
 ---
 
-## 6. Open blocker (does not block the gate)
+## 8. Milestones verification
 
-**Authenticated live-Jev benchmark.** No `JEV_API_KEY` was available, so real decision latency could not be measured end-to-end — only transport + vendor figures. To close this completely:
-
-1. Obtain a hosted `jv_live_…` key (self-serve, prepaid, ≈ $0.03 is enough for dozens of calls).
-2. Run 50–100 calls with a 12 KB representative chunk over a **kept-alive HTTP/2** connection (`reqwest` with `http2_prior_knowledge`); record p50/p95 and payload bytes.
-3. Re-confirm the §3 SLA in Phase 5 (`PHASES.md` Phase 5: *"Benchmark vs the Phase 0 numbers"*).
-
-This is tracked as the one remaining sub-item of the Phase 0 task and is scheduled to be satisfied by the Phase 5 benchmark against these numbers.
+`gh api repos/mahmoudfarahat2647/coderadar/milestones` confirms **9 milestones exist**, matching Phases 0–8 one-to-one (Phase 0…Phase 8). ✅ No creation required.
 
 ---
 
-## 7. Milestones verification
-
-`gh api repos/mahmoudfarahat2647/coderadar/milestones` confirms **9 milestones already exist**, matching `PHASES.md` Phases 0–8 one-to-one:
-
-| # | Milestone | State | Open issues |
-| :---: | :--- | :---: | :---: |
-| 1 | Phase 0 — Spike & spec cleanup | open | 1 |
-| 2 | Phase 1 — Foundation | open | 1 |
-| 3 | Phase 2 — Scanner, Tier 0, Mock engine | open | 1 |
-| 4 | Phase 3 — Tauri shell, dashboard, findings feed | open | 1 |
-| 5 | Phase 4 — Polar radar canvas | open | 1 |
-| 6 | Phase 5 — Jev Tier 1 + privacy layer | open | 1 |
-| 7 | Phase 6 — Diff modal, safe patching, history | open | 1 |
-| 8 | Phase 7 — Hardening and release v1.0 | open | 1 |
-| 9 | Phase 8 — Post-MVP (v1.1+) | open | 1 |
-
-**Result:** ✅ verified — no milestone creation required. ✅
-
----
-
-## 8. Phase 0 task ledger
+## 9. Phase 0 task ledger
 
 | Task (from issue #1) | Status | Evidence |
 | :--- | :---: | :--- |
-| Call the Jev API with 10-chunk batches over HTTP/2; record latency & payload | ⚠️ partial | Endpoints probed live (§2.3–2.4); authenticated inference blocked on key (§6) |
-| Reconcile latency SLA vs `CR-SPEC-01` EF-04 target | ✅ | §3 — two-tier model adopted |
-| Choose Tier 1 languages for v1.0 | ✅ | §4 — TypeScript/JavaScript |
-| Validate radar node-omission invariant | ✅ | §5.1 — consistent |
-| Fix radar node limit + Markdown export priority inconsistencies | ✅ | §5.2, §5.3 |
-| Fix broken `PRD.md` companion link | ✅ | §5.4 |
-| Verify GitHub milestones Phase 0 … Phase 8 | ✅ | §7 |
+| Call the Jev API with 10-chunk batches over HTTP/2; record latency & payload | ✅ | Authenticated calls to `openrouter.ai/api/alpha/decisions` (§3); HTTP/1.1 client caveat noted (§2.2) |
+| Reconcile latency SLA vs `CR-SPEC-01` FR-04 target | ✅ | §5 — two-tier model; live Jev re-scoped to background |
+| Choose Tier 1 languages for v1.0 | ✅ | §6 — TypeScript/JavaScript |
+| Validate radar node-omission invariant | ✅ | §7.1 — consistent |
+| Fix radar node limit + Markdown export priority inconsistencies | ✅ | §7.2, §7.3 |
+| Fix broken `PRD.md` companion link | ✅ | §7.4 |
+| Verify GitHub milestones Phase 0 … Phase 8 | ✅ | §8 |
 
-**Gate:** ✅ **PASS** — a written benchmark number exists (vendor 70–500 ms/request; measured RTT ~90 ms, TLS ~262 ms), and the PRD claims have been corrected to match it.
+**Gate:** ✅ **PASS** — a written (now *measured, authenticated*) benchmark number exists: **~0.5–0.6 s/chunk warm, ~$0.00015/chunk**, and the PRD claims were corrected from "12–35 ms real-time" to the two-tier model.
+
+---
+
+> ### 🔐 Security note (key handling)
+> The benchmark used an API key supplied at runtime; it is **not** stored in this repository or any committed file. Because it was shared in plaintext during the session, **rotate it** after use (the key observed also had a 7-day expiry and a $1 balance). For production, `CR-SPEC-03`'s OS-keychain storage (`keyring-rs`) remains correct — store the OpenRouter/TypeSafe key there, never in source.

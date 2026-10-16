@@ -28,7 +28,7 @@ Please conduct a thorough, unbiased, and adversarial architectural review of thi
 - Are there any subtle violations of SOLID principles (especially SRP, DIP, or boundary leakage)?
 
 ### 2. Jev Decision Model Integration & Latency Feasibility
-- Is the Two-Tier latency model realistic: **10–35 ms/chunk in Mock mode**, and **70–500 ms per batched request (~16–59 ms/chunk amortized)** against live Jev when batching AST chunks over HTTP/IPC? (See CR-SPEC-08 for the measured Phase 0 numbers.)
+- Is the Two-Tier latency model realistic: **10–35 ms/chunk in Mock mode**, and **~0.5–0.6 s/chunk against live Jev** (measured, one decision per request) — i.e. is a "background deep scan that takes minutes and ~$1 per 5,000-file repo" an acceptable scope for the Tier-1 engine? (See CR-SPEC-08 §3–§5 for the authenticated Phase 0 numbers.)
 - Are the proposed JSON schemas for Jev properly constrained to Booleans, Enums, and Floats?
 - Is the Dual-Tier pipeline (Tier 1: Jev Decision -> Tier 2: On-Demand LLM Auto-Fix) sound and cost-effective?
 - How resilient is the fallback mechanism (Built-in Local Mock Server)?

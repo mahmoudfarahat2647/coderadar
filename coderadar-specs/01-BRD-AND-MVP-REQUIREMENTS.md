@@ -50,7 +50,7 @@
 
 ### FR-04: Tier 1 Semantic Rule Evaluation
 - Every code chunk is evaluated via typed assertion schema.
-- Latency target: **10–35 ms per chunk** under the local **Mock engine**; **≤ 500 ms per batched decision request** (p95) and **≈ 16–59 ms per chunk amortized** over a batch of 10 against **live Jev** on a warm HTTP/2 connection (vendor model floor 70 ms/request). See [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3 — the earlier "12–35 ms per chunk against live Jev" claim is not supported and was corrected.
+- Latency target: **10–35 ms per chunk** under the local **Mock engine** (default, offline). Against **live Jev** (background deep scan), the measured budget is **≈ 0.5–0.6 s per chunk warm** (~0.9 s cold), **one decision per chunk**, ~$0.00015/chunk — a 5,000-file repo is **minutes and ~$1**, not real-time. See [`CR-SPEC-08`](./08-PHASE-0-SPIKE-AND-DECISIONS.md) §3–§5 — the earlier "12–35 ms per chunk against live Jev" claim is not supported and was corrected.
 - Response parsing yields structured `FindingDTO` containing file, verified AST chunk line range (e.g. `lines 35-85`) or exact line when resolved by Tier 0, CWE id, confidence, and rule metadata resolved locally from `manifest.json`.
 - Strict Zero Text Generation: Semantic engine returns exclusively Enums, Booleans, and Numbers.
 
