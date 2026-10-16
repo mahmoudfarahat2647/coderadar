@@ -1,0 +1,20 @@
+[package]
+name = "coderadar-usecases"
+description = "CodeRadar Studio Layer 2 (Application Business Rules): vendor-agnostic ports. No async runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Layer 2 may depend on the domain core and nothing else. In particular it must
+# NEVER depend on `tokio` (or any async runtime), `reqwest`, `sqlx`, or any
+# outer adapter/infrastructure crate. Asynchronous boundaries are expressed with
+# plain `std::future::Future` trait objects — see `src/ports.rs`.
+# Enforced by `scripts/check-architecture.sh`.
+[dependencies]
+coderadar-domain = { workspace = true }

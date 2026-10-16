@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  architecture:
+    name: Architectural boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce the Clean Architecture Dependency Rule
+        run: bash scripts/check-architecture.sh
+
+  rules-manifest:
+    name: Rules manifest contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate rules/manifest.json
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          with open("rules/manifest.json", encoding="utf-8") as fh:
+              data = json.load(fh)
+          rules = data["rules"]
+          assert data["total_rules"] == 19, data["total_rules"]
+          assert len(rules) == 19, len(rules)
+          ids = [r["id"] for r in rules]
+          assert len(set(ids)) == 19, "duplicate rule ids"
+          for r in rules:
+              assert r["cwe"] is not None
+              assert r["severity"] in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}, r
+          print("manifest OK:", len(rules), "rules")
+          PY
+
+  build-test-clippy:
+    name: Build, test & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo build
+        run: cargo build --workspace --all-targets --verbose
+      - name: cargo test
+        run: cargo test --workspace --all-targets --verbose
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  msrv:
+    name: MSRV build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in sync with `rust-version` in the workspace Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.82.0
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check on the declared MSRV
+        run: cargo check --workspace --all-targets

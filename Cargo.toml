@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/coderadar-domain",
+    "crates/coderadar-usecases",
+    "crates/coderadar-adapters",
+    "crates/coderadar-infrastructure",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/mahmoudfarahat2647/coderadar"
+authors = ["CodeRadar Studio"]
+
+[workspace.dependencies]
+coderadar-domain = { path = "crates/coderadar-domain" }
+coderadar-usecases = { path = "crates/coderadar-usecases" }
+coderadar-adapters = { path = "crates/coderadar-adapters" }
+coderadar-infrastructure = { path = "crates/coderadar-infrastructure" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

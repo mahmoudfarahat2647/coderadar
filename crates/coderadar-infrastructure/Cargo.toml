@@ -1,0 +1,22 @@
+[package]
+name = "coderadar-infrastructure"
+description = "CodeRadar Studio Layer 4 (Frameworks & Drivers): concrete adapters (Tauri/Tokio/Sqlx/Reqwest)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+# Layer 4 is the outermost circle: it may depend on every inner layer and on
+# external drivers. Concrete implementations of the Layer 2 ports live here.
+[dependencies]
+coderadar-domain = { workspace = true }
+coderadar-usecases = { workspace = true }
+coderadar-adapters = { workspace = true }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
