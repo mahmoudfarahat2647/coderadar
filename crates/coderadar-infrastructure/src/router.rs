@@ -15,26 +15,32 @@ use crate::layer_map::LayerMap;
 use crate::mock::MockRuleEvaluator;
 use crate::tier0::Tier0RuleEvaluator;
 
-/// Routes rules to Tier 0 or Mock and merges the results.
+/// Routes rules to Tier 0 or the semantic engine and merges the results.
 pub struct RuleEngineRouter {
     tier0: Tier0RuleEvaluator,
-    mock: MockRuleEvaluator,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
 }
 
 impl RuleEngineRouter {
-    /// Create the router over the scan's layer map.
+    /// Create the router with the default Mock semantic engine.
     pub fn new(layer_map: Arc<LayerMap>) -> Self {
         Self {
             tier0: Tier0RuleEvaluator::new(layer_map),
-            mock: MockRuleEvaluator::new(),
+            semantic: Arc::new(MockRuleEvaluator::new()),
         }
     }
 
-    /// Replace the mock engine (used by the UI to emulate cloud latency).
+    /// Replace the semantic engine (Mock, live Jev, or the fallback decorator).
     #[must_use]
-    pub fn with_mock(mut self, mock: MockRuleEvaluator) -> Self {
-        self.mock = mock;
+    pub fn with_semantic(mut self, semantic: Arc<dyn SemanticRuleEvaluator>) -> Self {
+        self.semantic = semantic;
         self
+    }
+
+    /// Replace the semantic engine with a Mock evaluator (latency emulation).
+    #[must_use]
+    pub fn with_mock(self, mock: MockRuleEvaluator) -> Self {
+        self.with_semantic(Arc::new(mock))
     }
 
     /// Indices of the rules owned by the Tier 0 engine.
@@ -112,13 +118,13 @@ impl SemanticRuleEvaluator for RuleEngineRouter {
                 scatter_results(&mut slots, rules, &tier0_indices, results, "tier0")?;
             }
 
-            let mock_indices: Vec<usize> = (0..rules.len())
+            let semantic_indices: Vec<usize> = (0..rules.len())
                 .filter(|index| !tier0_indices.contains(index))
                 .collect();
-            if !mock_indices.is_empty() {
-                let subset = subset_of(rules, &mock_indices);
-                let results = self.mock.evaluate_batch(chunks, &subset).await?;
-                scatter_results(&mut slots, rules, &mock_indices, results, "mock")?;
+            if !semantic_indices.is_empty() {
+                let subset = subset_of(rules, &semantic_indices);
+                let results = self.semantic.evaluate_batch(chunks, &subset).await?;
+                scatter_results(&mut slots, rules, &semantic_indices, results, "semantic")?;
             }
 
             slots

@@ -1,15 +1,16 @@
 import React from "react";
 import { Radar, ShieldAlert, Cpu, GitPullRequest, ExternalLink } from "lucide-react";
-import { MockModeStatus } from "../types";
+import { EngineStatus } from "../types";
+import { engineTone } from "../utils/engineTone";
 
 interface HeaderProps {
-  mockStatus: MockModeStatus | null;
+  engineStatus: EngineStatus | null;
   activeTab: string;
   onTabChange: (tab: string) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  mockStatus,
+  engineStatus,
   activeTab,
   onTabChange,
 }) => {
@@ -96,15 +97,15 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right Telemetry Badges */}
       <div className="flex items-center space-x-3 text-xs">
-        {mockStatus && (
+        {engineStatus && (
           <div
-            className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/25 text-secondary text-[11px] font-mono"
-            title={mockStatus.description}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono border ${engineTone(engineStatus).wrapper}`}
+            title={engineStatus.description}
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-ping" />
-            <span className="font-semibold">Mock Engine</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${engineTone(engineStatus).dot}`} />
+            <span className="font-semibold">{engineTone(engineStatus).label}</span>
             <span className="text-text-muted">|</span>
-            <span className="text-text-muted">{mockStatus.ruleset_version}</span>
+            <span className="text-text-muted">{engineStatus.ruleset_version}</span>
           </div>
         )}
 

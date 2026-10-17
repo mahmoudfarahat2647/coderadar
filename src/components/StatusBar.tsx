@@ -1,20 +1,26 @@
 import React from "react";
-import { MockModeStatus, ScanStats } from "../types";
+import { KeyRound } from "lucide-react";
+import { EngineStatus, ScanStats } from "../types";
+import { engineTone } from "../utils/engineTone";
 
 interface StatusBarProps {
-  mockStatus: MockModeStatus | null;
+  engineStatus: EngineStatus | null;
   scanStats: ScanStats | null;
   isScanning: boolean;
+  onOpenApiKey: () => void;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
-  mockStatus,
+  engineStatus,
   scanStats,
   isScanning,
+  onOpenApiKey,
 }) => {
+  const tone = engineTone(engineStatus);
+
   return (
     <footer className="h-7 border-t border-border-subtle bg-surface-canvas px-4 flex items-center justify-between text-[11px] font-mono text-text-muted select-none z-20">
-      {/* Left: Daemon & Ruleset & Mock Mode */}
+      {/* Left: Daemon & Ruleset & Engine Mode */}
       <div className="flex items-center space-x-3 truncate">
         <div className="flex items-center space-x-1.5 shrink-0">
           <span className="w-2 h-2 rounded-full bg-secondary animate-pulse" />
@@ -26,28 +32,44 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
         <span className="text-border-strong hidden sm:inline">·</span>
 
-        <div className="truncate hidden md:flex items-center space-x-1">
-          <span>Ruleset:</span>
-          <span className="text-text-primary">{mockStatus?.ruleset_version || "v2026.1-strict"}</span>
-        </div>
+        {engineStatus && (
+          <div className="truncate hidden md:flex items-center space-x-1">
+            <span>Ruleset:</span>
+            <span className="text-text-primary">{engineStatus.ruleset_version}</span>
+          </div>
+        )}
 
         <span className="text-border-strong hidden sm:inline">·</span>
 
-        {/* Mock Mode Indicator */}
+        {/* Engine Mode Indicator (live Jev vs Mock fallback) */}
         <div
-          className="flex items-center space-x-1 px-1.5 py-0.2 rounded bg-primary/10 border border-primary/25 text-secondary shrink-0 cursor-help"
-          title={mockStatus?.description}
+          className={`flex items-center space-x-1 px-1.5 py-0.2 rounded border shrink-0 cursor-help ${tone.wrapper}`}
+          title={engineStatus?.reason || engineStatus?.description}
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-secondary" />
-          <span className="font-semibold">Engine: Mock Mode</span>
-          <span className="text-[10px] text-text-muted hidden lg:inline">
-            ({mockStatus?.tier0_rules_count || 3} Tier 0 + {mockStatus?.mock_rules_count || 13} Mock)
-          </span>
+          <span className={`w-1.5 h-1.5 rounded-full ${tone.dot}`} />
+          <span className="font-semibold">Engine: {engineStatus?.badge || "Mock Mode"}</span>
+          {engineStatus && (
+            <span className="text-[10px] text-text-muted hidden lg:inline">
+              ({engineStatus.tier0_rules_count} Tier 0 +{" "}
+              {engineStatus.semantic_rules_count} Semantic)
+            </span>
+          )}
         </div>
       </div>
 
       {/* Right: Telemetry & Memory */}
       <div className="flex items-center space-x-3 shrink-0 tabular-nums">
+        {engineStatus?.is_live && engineStatus.tier1_requests > 0 && (
+          <>
+            <div className="hidden lg:inline">
+              <span>Jev: </span>
+              <span className="text-status-low font-semibold">
+                {engineStatus.last_latency_ms}ms / {engineStatus.max_latency_ms}ms max
+              </span>
+            </div>
+            <span className="text-border-strong hidden lg:inline">·</span>
+          </>
+        )}
         {scanStats && (
           <>
             <div className="hidden sm:inline">
@@ -62,11 +84,14 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             <span className="text-border-strong hidden sm:inline">·</span>
           </>
         )}
-        <div className="hidden lg:inline text-text-muted">
-          <span>Heap RSS: </span>
-          <span className="text-tertiary">~38MB</span>
-          <span className="text-[10px] text-text-muted"> (&lt;45MB budget)</span>
-        </div>
+        <button
+          onClick={onOpenApiKey}
+          className="flex items-center space-x-1 px-1.5 py-0.5 rounded border border-border-subtle hover:border-border-strong hover:text-text-primary transition-colors"
+          title="Configure the Jev API key (OS keychain)"
+        >
+          <KeyRound className="w-3 h-3" />
+          <span>API Key</span>
+        </button>
       </div>
     </footer>
   );

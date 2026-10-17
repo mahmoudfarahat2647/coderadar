@@ -42,14 +42,8 @@ use coderadar_domain::{
 use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
 use regex::Regex;
 
+use crate::engine_rules::{GIT_CHANGESET_IDS, TIER0_OWNED_IDS};
 use crate::heuristics::{build_finding, chunk_lines};
-
-/// Rule ids owned by the Tier 0 static engine (`crate::tier0`); the Mock
-/// evaluator always returns them empty.
-const TIER0_OWNED_IDS: [&str; 3] = ["ARCH-DEP-001", "SEC-TOK-002", "SEC-TLS-005"];
-
-/// `git_changeset`-scoped rules; the Git changeset engine arrives in Phase 8.
-const GIT_CHANGESET_IDS: [&str; 3] = ["PR-SCP-001", "PR-BRK-002", "PR-TST-003"];
 
 /// Minimum chunk length (lines) before `ARCH-SRP-002` may flag a class.
 const SRP_MIN_LINES: u32 = 200;

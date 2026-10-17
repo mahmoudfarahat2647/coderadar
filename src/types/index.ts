@@ -69,10 +69,21 @@ export interface ScanReport {
   findings: FindingDTO[];
 }
 
-export interface MockModeStatus {
-  is_mock_mode: boolean;
+export interface EngineStatus {
+  mode: string;
+  is_live: boolean;
+  degraded: boolean;
+  badge: string;
+  reason?: string | null;
+  tier1_requests: number;
+  fallback_events: number;
+  last_latency_ms: number;
+  max_latency_ms: number;
+  total_latency_ms: number;
+  api_key_configured: boolean;
+  api_key_masked?: string | null;
   tier0_rules_count: number;
-  mock_rules_count: number;
+  semantic_rules_count: number;
   total_rules: number;
   ruleset_version: string;
   description: string;

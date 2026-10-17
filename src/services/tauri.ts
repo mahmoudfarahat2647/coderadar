@@ -4,7 +4,7 @@
  * Gracefully falls back to simulation mode in standard browser previews.
  */
 
-import { FindingBatch, MockModeStatus, ScanMode, ScanReport } from "../types";
+import { EngineStatus, FindingBatch, ScanMode, ScanReport } from "../types";
 
 export const isTauriEnvironment = (): boolean => {
   return (
@@ -51,24 +51,53 @@ export async function getDefaultScanPath(): Promise<string> {
   return "tests/fixtures/known-bad-repo";
 }
 
-export async function getMockModeStatus(): Promise<MockModeStatus> {
+const FALLBACK_ENGINE_STATUS: EngineStatus = {
+  mode: "mock",
+  is_live: false,
+  degraded: false,
+  badge: "Mock Mode",
+  reason: null,
+  tier1_requests: 0,
+  fallback_events: 0,
+  last_latency_ms: 0,
+  max_latency_ms: 0,
+  total_latency_ms: 0,
+  api_key_configured: false,
+  api_key_masked: null,
+  tier0_rules_count: 3,
+  semantic_rules_count: 13,
+  total_rules: 19,
+  ruleset_version: "v2026.1-strict",
+  description:
+    "Mock Mode: 3 Tier 0 (deterministic) + 13 semantic rules active. Configure an API key to enable live Jev Tier 1.",
+};
+
+export async function getEngineStatus(): Promise<EngineStatus> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<MockModeStatus>("get_mock_mode");
+      return await invoke<EngineStatus>("get_engine_status");
     } catch (e) {
-      console.warn("Failed to get mock mode status from Tauri:", e);
+      console.warn("Failed to get engine status from Tauri:", e);
     }
   }
-  return {
-    is_mock_mode: true,
-    tier0_rules_count: 3,
-    mock_rules_count: 13,
-    total_rules: 19,
-    ruleset_version: "v2026.1-strict",
-    description:
-      "Tier 0 (3 deterministic) + Mock Heuristics (13 regex) active. Jev Decision Engine integration in Phase 5.",
-  };
+  return FALLBACK_ENGINE_STATUS;
+}
+
+export async function storeApiKey(apiKey: string): Promise<EngineStatus> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<EngineStatus>("store_api_key", { apiKey });
+  }
+  throw new Error("Tauri environment not detected. Please run within CodeRadar desktop app.");
+}
+
+export async function clearApiKey(): Promise<EngineStatus> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<EngineStatus>("clear_api_key");
+  }
+  throw new Error("Tauri environment not detected. Please run within CodeRadar desktop app.");
 }
 
 export async function getRulesManifest(): Promise<unknown[]> {
