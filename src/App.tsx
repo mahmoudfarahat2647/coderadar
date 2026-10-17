@@ -4,6 +4,7 @@ import { MetricsRibbon } from "./components/MetricsRibbon";
 import { ScanBar } from "./components/ScanBar";
 import { FiltersBar } from "./components/FiltersBar";
 import { FindingsFeed } from "./components/FindingsFeed";
+import { PolarRadarCanvas } from "./components/PolarRadarCanvas";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { StatusBar } from "./components/StatusBar";
 import {
@@ -33,6 +34,7 @@ export const App: React.FC = () => {
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [findings, setFindings] = useState<FindingDTO[]>([]);
   const [selectedFinding, setSelectedFinding] = useState<FindingDTO | null>(null);
+  const [hoveredFindingId, setHoveredFindingId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [activeSeverity, setActiveSeverity] = useState<FilterSeverity>("ALL");
   const [activeCategory, setActiveCategory] = useState<FilterCategory>("ALL");
@@ -101,9 +103,7 @@ export const App: React.FC = () => {
     } else if (tab === "dashboard") {
       setActiveCategory("ALL");
     } else if (tab === "radar") {
-      setInfoBanner(
-        "360° Polar Radar Canvas is scheduled for Phase 4. Visualizing live streaming findings in the Feed."
-      );
+      setActiveCategory("ALL");
     } else if (tab === "prs") {
       setInfoBanner(
         "PR Changeset Diff engine and hygiene scorecard are scheduled for Phase 8."
@@ -410,16 +410,43 @@ export const App: React.FC = () => {
         severityTotals={severityTotals}
       />
 
-      {/* Main Content Area (Findings Feed + Detail Drawer) */}
+      {/* Main Content Area (360° Polar Radar Canvas + Findings Feed + Remediation Drawer) */}
       <div className="flex-1 flex overflow-hidden relative">
-        <FindingsFeed
-          findings={filteredFindings}
-          selectedFinding={selectedFinding}
-          onSelectFinding={setSelectedFinding}
-          onToggleResolve={handleToggleResolve}
-          isScanning={isScanning}
-        />
+        {/* Left Pane: Polar Radar Canvas */}
+        <div
+          className={`flex flex-col shrink-0 transition-all duration-300 relative border-r border-border-subtle ${
+            activeTab === "radar"
+              ? "flex-1 w-full"
+              : "w-[420px] lg:w-[480px] xl:w-[540px]"
+          }`}
+        >
+          <PolarRadarCanvas
+            findings={filteredFindings}
+            hoveredFindingId={hoveredFindingId}
+            selectedFinding={selectedFinding}
+            onHoverFinding={setHoveredFindingId}
+            onSelectFinding={setSelectedFinding}
+            cleanPassedPercent={passedPercent}
+            isScanning={isScanning}
+          />
+        </div>
 
+        {/* Right Pane: Structured Findings Feed */}
+        {activeTab !== "radar" && (
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-surface-panel/40">
+            <FindingsFeed
+              findings={filteredFindings}
+              selectedFinding={selectedFinding}
+              hoveredFindingId={hoveredFindingId}
+              onSelectFinding={setSelectedFinding}
+              onHoverFinding={setHoveredFindingId}
+              onToggleResolve={handleToggleResolve}
+              isScanning={isScanning}
+            />
+          </div>
+        )}
+
+        {/* Slide-over Finding Detail & Remediation Drawer */}
         {selectedFinding && (
           <FindingDrawer
             finding={selectedFinding}

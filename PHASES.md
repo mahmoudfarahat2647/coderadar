@@ -69,17 +69,17 @@
 
 **Gate:** pick a folder, see findings stream in, filters work, UI stays responsive. ✅ PASS — Tauri 2.0 shell + React 19 UI with Supabase Dark tokens, streaming batches via 100 ms throttler, metrics ribbon, interactive filters, remediation drawer, and strict CSP *(CR-SPEC-10)*.
 
-## Phase 4 — Polar radar canvas
+## Phase 4 — Polar radar canvas ✅ (see `coderadar-specs/11-PHASE-4-POLAR-RADAR-CANVAS.md`)
 **Goal:** the signature feature.
 
-- [ ] Two canvas layers: static nodes + animated sweep (`requestAnimationFrame`, no React state)
-- [ ] `RadarPresenter` (polar projection, FNV-1a jitter) + coordinate math tests
-- [ ] Severity colors/sizes; clean files draw no nodes
-- [ ] Hover feed row ⇄ highlight node; click opens detail
-- [ ] HiDPI scaling, `prefers-reduced-motion`
-- [ ] Clustering above 150 nodes (can move to P1 if tight)
+- [x] Two canvas layers: static nodes + animated sweep (`requestAnimationFrame`, no React state)
+- [x] `RadarPresenter` (polar projection, FNV-1a jitter) + coordinate math tests
+- [x] Severity colors/sizes; clean files draw no nodes
+- [x] Hover feed row ⇄ highlight node; click opens detail
+- [x] HiDPI scaling, `prefers-reduced-motion`
+- [x] Clustering above 150 nodes (can move to P1 if tight)
 
-**Gate:** 60 FPS with up to 150 nodes (clustering activates above 150) on a mid-range laptop (DevTools trace).
+**Gate:** 60 FPS with up to 150 nodes (clustering activates above 150) on a mid-range laptop (DevTools trace). ✅ PASS — Dual-layer HTML5 canvas with zero-React-state 60 FPS requestAnimationFrame loop, polar coordinate transformations with canvas Y-inversion, clean node omission invariant, bi-directional hover vector beams/reticles, and node clustering for >150 findings *(CR-SPEC-11)*.
 
 ## Phase 5 — Jev Tier 1 + privacy layer
 **Goal:** swap Mock for real semantic evaluation without touching use cases.
