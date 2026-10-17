@@ -24,7 +24,7 @@ const SIGNATURE_CONFIDENCE: f32 = 0.9;
 /// Confidence assigned to the entropy heuristic.
 const ENTROPY_CONFIDENCE: f32 = 0.6;
 /// Minimum Shannon entropy (bits per character) for the entropy heuristic.
-const ENTROPY_THRESHOLD: f64 = 3.5;
+pub(crate) const ENTROPY_THRESHOLD: f64 = 3.5;
 
 /// Case-insensitive marker substrings that identify placeholder values.
 const PLACEHOLDER_MARKERS: [&str; 6] = [
@@ -37,13 +37,16 @@ const PLACEHOLDER_MARKERS: [&str; 6] = [
 ];
 
 /// A named credential-signature pattern; capture group 1 is the secret value.
-struct Signature {
-    kind: &'static str,
-    regex: Regex,
+///
+/// Shared with the outbound redaction layer (`crate::redaction`), which reuses
+/// exactly the same patterns so detection and scrubbing never diverge.
+pub(crate) struct Signature {
+    pub(crate) kind: &'static str,
+    pub(crate) regex: Regex,
 }
 
 /// All credential-signature patterns, compiled once.
-fn signatures() -> &'static [Signature] {
+pub(crate) fn signatures() -> &'static [Signature] {
     static SIGNATURES: LazyLock<Vec<Signature>> = LazyLock::new(|| {
         vec![
             Signature {
@@ -99,7 +102,7 @@ fn signatures() -> &'static [Signature] {
 ///
 /// The identifier part matches anywhere inside a mixed-case name (`jwtSecret`,
 /// `dbPassword`), not only at a word start.
-static ENTROPY_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+pub(crate) static ENTROPY_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?i)\b\w*(?:api[_-]?key|secret|token|password|passwd|credential)\w*\s*[:=]\s*['"]([^'"]{16,})['"]"#,
     )
@@ -167,7 +170,7 @@ fn scan_line(rule: &RuleSpec, file_path: &str, line_number: u32, line: &str) -> 
 /// This filter applies to the entropy heuristic only: signature matches fire
 /// even when their value contains words like `EXAMPLE` because fixtures
 /// deliberately use fake-looking tokens that must still be caught.
-fn is_placeholder(value: &str) -> bool {
+pub(crate) fn is_placeholder(value: &str) -> bool {
     let lowercase = value.to_ascii_lowercase();
     PLACEHOLDER_MARKERS
         .iter()
@@ -175,7 +178,7 @@ fn is_placeholder(value: &str) -> bool {
 }
 
 /// Shannon entropy of `value` in bits per character.
-fn shannon_entropy(value: &str) -> f64 {
+pub(crate) fn shannon_entropy(value: &str) -> f64 {
     let mut counts: HashMap<char, usize> = HashMap::new();
     for character in value.chars() {
         *counts.entry(character).or_insert(0) += 1;

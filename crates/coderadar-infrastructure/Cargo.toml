@@ -38,6 +38,32 @@ tree-sitter-javascript = "0.25"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Jev Tier 1 semantic engine HTTP client (Phase 5, CR-SPEC-12).
+# `blocking` keeps the std-future Layer 2 port runtime-free: the adapter calls
+# the blocking client from its own synchronous future body. `http2` negotiates
+# HTTP/2 and the shared `Client` owns the connection pool.
+# TLS: `rustls-tls-native-roots` uses the pure-Rust `ring` provider and the OS
+# certificate store. This deliberately avoids `default-tls` (native OpenSSL on
+# Linux) and the `rustls-tls`/aws-lc stack, which pulls the optional HTTP/3
+# `quinn` tree — both break the workspace MSRV job (rust-version = 1.82).
+# reqwest is held on the 0.12 line: 0.13 declares rust-version = 1.85.
+# Cargo.lock additionally pins `quinn`/`quinn-proto`, `hyper-util`,
+# `hyper-rustls`, `tokio-util`, `idna_adapter` and `zeroize` to the newest
+# releases that still compile on Rust 1.82 (see the MSRV job in CI).
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "http2", "rustls-tls-native-roots"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# OS keychain backend (Phase 5, CR-SPEC-12 §4). Per-target features avoid
+# pulling a Linux system library into the Windows/macOS builds.
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `linux-native` uses the kernel keyring (pure Rust, no `libdbus`/`libsecret`
+# system library), keeping CI builds dependency-free.
+keyring = { version = "3.6.3", default-features = false, features = ["linux-native"] }
 
 [dev-dependencies]
 # Pinned: tempfile >= 3.15 pulls getrandom 0.4, which requires Rust 1.85+

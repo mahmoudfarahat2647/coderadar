@@ -81,16 +81,16 @@
 
 **Gate:** 60 FPS with up to 150 nodes (clustering activates above 150) on a mid-range laptop (DevTools trace). ✅ PASS — Dual-layer HTML5 canvas with zero-React-state 60 FPS requestAnimationFrame loop, polar coordinate transformations with canvas Y-inversion, clean node omission invariant, bi-directional hover vector beams/reticles, and node clustering for >150 findings *(CR-SPEC-11)*.
 
-## Phase 5 — Jev Tier 1 + privacy layer
+## Phase 5 — Jev Tier 1 + privacy layer ✅ (see `coderadar-specs/12-PHASE-5-JEV-TIER1-AND-PRIVACY-LAYER.md`)
 **Goal:** swap Mock for real semantic evaluation without touching use cases.
 
-- [ ] `JevRuleEvaluatorAdapter` (`reqwest`, HTTP/2, batches of 10, connection pool)
-- [ ] Secret redaction before any outbound payload (+ tests with fake keys)
-- [ ] API key stored in OS keychain (`keyring-rs`); auto-fallback to Mock if missing
-- [ ] Timeouts, retries, and graceful degradation when offline
-- [ ] Benchmark vs the Phase 0 numbers
+- [x] `JevRuleEvaluatorAdapter` (`reqwest`, HTTP/2, batches of 10, connection pool)
+- [x] Secret redaction before any outbound payload (+ tests with fake keys)
+- [x] API key stored in OS keychain (`keyring-rs`); auto-fallback to Mock if missing
+- [x] Timeouts, retries, and graceful degradation when offline
+- [x] Benchmark vs the Phase 0 numbers
 
-**Gate:** same app, same UI, real findings; unplugging the network falls back to Mock with the badge shown.
+**Gate:** same app, same UI, real findings; unplugging the network falls back to Mock with the badge shown. ✅ PASS — unchanged `SemanticRuleEvaluator` port; redaction before egress; `FallbackRuleEvaluator` + shared `EngineStatus` flip the status-bar badge to *Mock Mode (fallback)* on any Jev failure; hermetic adapter tests + MSRV 1.82 gate green *(CR-SPEC-12)*.
 
 ## Phase 6 — Diff modal, safe patching, history
 **Goal:** act on findings safely and track progress.

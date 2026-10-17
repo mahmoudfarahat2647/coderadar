@@ -24,7 +24,7 @@ use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
 use crate::layer_map::LayerMap;
 
 mod dependency_rule;
-mod secrets;
+pub(crate) mod secrets;
 mod tls;
 
 /// Rule id of the Dependency Rule violation check.

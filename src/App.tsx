@@ -8,11 +8,11 @@ import { PolarRadarCanvas } from "./components/PolarRadarCanvas";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { StatusBar } from "./components/StatusBar";
 import {
+  EngineStatus,
   FilterCategory,
   FilterSeverity,
   FindingBatch,
   FindingDTO,
-  MockModeStatus,
   ScanMode,
   ScanReport,
   ScanStats,
@@ -20,7 +20,7 @@ import {
 } from "./types";
 import {
   getDefaultScanPath,
-  getMockModeStatus,
+  getEngineStatus,
   isTauriEnvironment,
   listenToScanBatches,
   openFolderDialog,
@@ -39,7 +39,7 @@ export const App: React.FC = () => {
   const [activeSeverity, setActiveSeverity] = useState<FilterSeverity>("ALL");
   const [activeCategory, setActiveCategory] = useState<FilterCategory>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [mockStatus, setMockStatus] = useState<MockModeStatus | null>(null);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
   const [scanStats, setScanStats] = useState<ScanStats | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
@@ -49,8 +49,8 @@ export const App: React.FC = () => {
     getDefaultScanPath().then((p) => {
       if (p) setTargetPath(p);
     });
-    getMockModeStatus().then((s) => {
-      if (s) setMockStatus(s);
+    getEngineStatus().then((s) => {
+      if (s) setEngineStatus(s);
     });
 
     // Listen to streaming scan events from the Rust 100 ms throttler
@@ -71,6 +71,10 @@ export const App: React.FC = () => {
       (report: ScanReport) => {
         setIsScanning(false);
         setScanStats(report.scan);
+        // Refresh the engine badge: a scan may have triggered a Mock fallback.
+        getEngineStatus().then((s) => {
+          if (s) setEngineStatus(s);
+        });
         if (report.findings && report.findings.length > 0) {
           setFindings((prev) => {
             const map = new Map<string, FindingDTO>();
@@ -343,7 +347,7 @@ export const App: React.FC = () => {
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface-canvas text-text-primary">
       {/* Top Header */}
       <Header
-        mockStatus={mockStatus}
+        engineStatus={engineStatus}
         activeTab={activeTab}
         onTabChange={handleTabChange}
       />
@@ -458,7 +462,7 @@ export const App: React.FC = () => {
 
       {/* Bottom Telemetry Status Bar */}
       <StatusBar
-        mockStatus={mockStatus}
+        engineStatus={engineStatus}
         scanStats={scanStats}
         isScanning={isScanning}
       />
