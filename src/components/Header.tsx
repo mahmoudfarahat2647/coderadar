@@ -1,6 +1,7 @@
 import React from "react";
 import { Radar, ShieldAlert, Cpu, GitPullRequest, ExternalLink } from "lucide-react";
 import { EngineStatus } from "../types";
+import { engineTone } from "../utils/engineTone";
 
 interface HeaderProps {
   engineStatus: EngineStatus | null;
@@ -98,31 +99,11 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex items-center space-x-3 text-xs">
         {engineStatus && (
           <div
-            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono border ${
-              engineStatus.is_live
-                ? "bg-status-low/10 border-status-low/30 text-status-low"
-                : engineStatus.degraded
-                  ? "bg-status-high/10 border-status-high/30 text-status-high"
-                  : "bg-primary/10 border-primary/25 text-secondary"
-            }`}
+            className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono border ${engineTone(engineStatus).wrapper}`}
             title={engineStatus.description}
           >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                engineStatus.is_live
-                  ? "bg-status-low animate-ping"
-                  : engineStatus.degraded
-                    ? "bg-status-high"
-                    : "bg-secondary animate-ping"
-              }`}
-            />
-            <span className="font-semibold">
-              {engineStatus.is_live
-                ? "Jev Tier 1"
-                : engineStatus.degraded
-                  ? "Mock Fallback"
-                  : "Mock Engine"}
-            </span>
+            <span className={`w-1.5 h-1.5 rounded-full ${engineTone(engineStatus).dot}`} />
+            <span className="font-semibold">{engineTone(engineStatus).label}</span>
             <span className="text-text-muted">|</span>
             <span className="text-text-muted">{engineStatus.ruleset_version}</span>
           </div>

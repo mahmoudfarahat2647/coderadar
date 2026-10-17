@@ -1,31 +1,22 @@
 import React from "react";
+import { KeyRound } from "lucide-react";
 import { EngineStatus, ScanStats } from "../types";
+import { engineTone } from "../utils/engineTone";
 
 interface StatusBarProps {
   engineStatus: EngineStatus | null;
   scanStats: ScanStats | null;
   isScanning: boolean;
+  onOpenApiKey: () => void;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
   engineStatus,
   scanStats,
   isScanning,
+  onOpenApiKey,
 }) => {
-  const engineTone = engineStatus?.is_live
-    ? {
-        wrapper: "bg-status-low/10 border-status-low/30 text-status-low",
-        dot: "bg-status-low",
-      }
-    : engineStatus?.degraded
-      ? {
-          wrapper: "bg-status-high/10 border-status-high/30 text-status-high",
-          dot: "bg-status-high",
-        }
-      : {
-          wrapper: "bg-primary/10 border-primary/25 text-secondary",
-          dot: "bg-secondary",
-        };
+  const tone = engineTone(engineStatus);
 
   return (
     <footer className="h-7 border-t border-border-subtle bg-surface-canvas px-4 flex items-center justify-between text-[11px] font-mono text-text-muted select-none z-20">
@@ -41,28 +32,28 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 
         <span className="text-border-strong hidden sm:inline">·</span>
 
-        <div className="truncate hidden md:flex items-center space-x-1">
-          <span>Ruleset:</span>
-          <span className="text-text-primary">
-            {engineStatus?.ruleset_version || "v2026.1-strict"}
-          </span>
-        </div>
+        {engineStatus && (
+          <div className="truncate hidden md:flex items-center space-x-1">
+            <span>Ruleset:</span>
+            <span className="text-text-primary">{engineStatus.ruleset_version}</span>
+          </div>
+        )}
 
         <span className="text-border-strong hidden sm:inline">·</span>
 
         {/* Engine Mode Indicator (live Jev vs Mock fallback) */}
         <div
-          className={`flex items-center space-x-1 px-1.5 py-0.2 rounded border shrink-0 cursor-help ${engineTone.wrapper}`}
+          className={`flex items-center space-x-1 px-1.5 py-0.2 rounded border shrink-0 cursor-help ${tone.wrapper}`}
           title={engineStatus?.reason || engineStatus?.description}
         >
-          <span className={`w-1.5 h-1.5 rounded-full ${engineTone.dot}`} />
-          <span className="font-semibold">
-            Engine: {engineStatus?.badge || "Mock Mode"}
-          </span>
-          <span className="text-[10px] text-text-muted hidden lg:inline">
-            ({engineStatus?.tier0_rules_count ?? 3} Tier 0 +{" "}
-            {engineStatus?.semantic_rules_count ?? 13} Semantic)
-          </span>
+          <span className={`w-1.5 h-1.5 rounded-full ${tone.dot}`} />
+          <span className="font-semibold">Engine: {engineStatus?.badge || "Mock Mode"}</span>
+          {engineStatus && (
+            <span className="text-[10px] text-text-muted hidden lg:inline">
+              ({engineStatus.tier0_rules_count} Tier 0 +{" "}
+              {engineStatus.semantic_rules_count} Semantic)
+            </span>
+          )}
         </div>
       </div>
 
@@ -93,11 +84,14 @@ export const StatusBar: React.FC<StatusBarProps> = ({
             <span className="text-border-strong hidden sm:inline">·</span>
           </>
         )}
-        <div className="hidden lg:inline text-text-muted">
-          <span>Heap RSS: </span>
-          <span className="text-tertiary">~38MB</span>
-          <span className="text-[10px] text-text-muted"> (&lt;45MB budget)</span>
-        </div>
+        <button
+          onClick={onOpenApiKey}
+          className="flex items-center space-x-1 px-1.5 py-0.5 rounded border border-border-subtle hover:border-border-strong hover:text-text-primary transition-colors"
+          title="Configure the Jev API key (OS keychain)"
+        >
+          <KeyRound className="w-3 h-3" />
+          <span>API Key</span>
+        </button>
       </div>
     </footer>
   );

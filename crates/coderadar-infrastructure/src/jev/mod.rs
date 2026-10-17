@@ -16,8 +16,11 @@
 //!
 //! Chunks are processed in batches of [`JevConfig::batch_size`] (10 by default)
 //! by a bounded worker pool of up to [`JevConfig::max_parallel`] threads sharing
-//! one HTTP/2 connection pool. Each request carries a [`JevConfig`] timeout
-//! (2 s) and is retried up to [`JevConfig::max_retries`] times.
+//! one HTTP/2 connection pool — one decision request per chunk, matching the
+//! `CR-SPEC-08 §3.4` recommendation. Each request carries a [`JevConfig`]
+//! timeout (2 s); transient failures (network, timeout, `429`, `5xx`) are
+//! retried up to [`JevConfig::max_retries`] times, while permanent failures
+//! (invalid key `4xx`, unparsable body) fail immediately.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -91,7 +94,10 @@ impl Default for JevConfig {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum JevQuestion {
     /// Boolean-probability question: `noul` is the probability of "yes".
-    Noul,
+    Noul {
+        /// Natural-language assertion the model must evaluate against the state.
+        instructions: String,
+    },
 }
 
 /// One decision request: a single `state` plus its typed questions.
@@ -114,21 +120,9 @@ pub enum JevAnswer {
         /// Probability of "yes" in `[0.0, 1.0]`.
         noul: f32,
     },
-    /// Numeric score answer with a calibrated confidence.
-    Score {
-        /// Raw score.
-        #[allow(dead_code)]
-        score: f32,
-        /// Calibrated confidence in `[0.0, 1.0]`.
-        #[serde(default)]
-        confidence: f32,
-    },
-    /// Categorical answer.
-    Choice {
-        /// Selected option.
-        #[allow(dead_code)]
-        choice: String,
-    },
+    /// Answer type beyond the Phase 5 protocol; parsed and ignored.
+    #[serde(other)]
+    Other,
 }
 
 impl JevAnswer {
@@ -136,8 +130,7 @@ impl JevAnswer {
     pub fn confidence(&self) -> Option<f32> {
         match self {
             Self::Noul { noul } => Some(*noul),
-            Self::Score { confidence, .. } => Some(*confidence),
-            Self::Choice { .. } => None,
+            Self::Other => None,
         }
     }
 }
@@ -158,8 +151,35 @@ pub trait JevTransport: Send + Sync {
     /// Perform a single decision request.
     ///
     /// # Errors
-    /// Returns [`DomainError::External`] on any transport or decode failure.
-    fn decide(&self, request: &JevRequest) -> Result<JevResponse, DomainError>;
+    /// Returns [`JevTransportError::Transient`] for failures worth retrying
+    /// (network faults, timeouts, `429`, `5xx`) and
+    /// [`JevTransportError::Permanent`] for failures retrying cannot fix
+    /// (invalid key, rejected payload, unparsable body).
+    fn decide(&self, request: &JevRequest) -> Result<JevResponse, JevTransportError>;
+}
+
+/// Transport failures classified for the retry policy.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JevTransportError {
+    /// Network failure, timeout, `429` or `5xx`: retrying may succeed.
+    Transient(String),
+    /// Bad key (`4xx`), rejected payload or unparsable body: retrying cannot succeed.
+    Permanent(String),
+}
+
+impl JevTransportError {
+    /// The human-readable message carried by this error.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Transient(message) | Self::Permanent(message) => message,
+        }
+    }
+}
+
+impl From<JevTransportError> for DomainError {
+    fn from(error: JevTransportError) -> Self {
+        DomainError::External(error.message().to_string())
+    }
 }
 
 /// `reqwest` blocking transport with an HTTP/2 connection pool.
@@ -199,30 +219,34 @@ impl HttpJevTransport {
 }
 
 impl JevTransport for HttpJevTransport {
-    fn decide(&self, request: &JevRequest) -> Result<JevResponse, DomainError> {
+    fn decide(&self, request: &JevRequest) -> Result<JevResponse, JevTransportError> {
         let response = self
             .client
             .post(&self.endpoint)
             .bearer_auth(&self.api_key)
             .json(request)
             .send()
-            .map_err(|error| DomainError::External(format!("Jev request failed: {error}")))?;
+            .map_err(|error| {
+                JevTransportError::Transient(format!("Jev request failed: {error}"))
+            })?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .map_err(|error| DomainError::External(format!("Jev body read failed: {error}")))?;
+        let body = response.text().map_err(|error| {
+            JevTransportError::Transient(format!("Jev body read failed: {error}"))
+        })?;
 
         if !status.is_success() {
-            return Err(DomainError::External(format!(
-                "Jev HTTP {}: {}",
-                status.as_u16(),
-                truncate(&body, 200)
-            )));
+            let message = format!("Jev HTTP {}: {}", status.as_u16(), truncate(&body, 200));
+            return Err(if status.as_u16() == 429 || status.is_server_error() {
+                JevTransportError::Transient(message)
+            } else {
+                JevTransportError::Permanent(message)
+            });
         }
 
-        serde_json::from_str::<JevResponse>(&body)
-            .map_err(|error| DomainError::External(format!("Jev response parse failed: {error}")))
+        serde_json::from_str::<JevResponse>(&body).map_err(|error| {
+            JevTransportError::Permanent(format!("Jev response parse failed: {error}"))
+        })
     }
 }
 
@@ -308,11 +332,13 @@ impl JevRuleEvaluatorAdapter {
                     break response;
                 }
                 Err(error) => {
-                    if attempt < self.config.max_retries {
+                    if matches!(error, JevTransportError::Transient(_))
+                        && attempt < self.config.max_retries
+                    {
                         attempt += 1;
                         std::thread::sleep(Duration::from_millis(50 * u64::from(attempt)));
                     } else {
-                        return Err(error);
+                        return Err(DomainError::from(error));
                     }
                 }
             }
@@ -345,7 +371,7 @@ impl JevRuleEvaluatorAdapter {
             let batch = &chunks[start..end];
 
             let counter = AtomicUsize::new(0);
-            let results = thread::scope(|scope| {
+            let results = thread::scope(|scope| -> Result<Vec<ChunkEvaluation>, DomainError> {
                 let next = &counter;
                 let workers = self.config.max_parallel.min(batch.len()).max(1);
                 let mut handles = Vec::with_capacity(workers);
@@ -364,13 +390,21 @@ impl JevRuleEvaluatorAdapter {
                 }
                 let mut collected = Vec::with_capacity(batch.len());
                 for handle in handles {
-                    collected.extend(handle.join().expect("Jev worker thread panicked"));
+                    // A panicked worker loses only its own batch; the whole
+                    // batch is re-evaluated by the Mock fallback instead of
+                    // aborting the process.
+                    let local = handle.join().map_err(|_| {
+                        DomainError::External("a Jev worker thread panicked".to_string())
+                    })?;
+                    collected.extend(local);
                 }
                 collected
+                    .into_iter()
+                    .collect::<Result<Vec<ChunkEvaluation>, DomainError>>()
             });
 
-            for result in results {
-                evaluations.push(result?);
+            for result in results? {
+                evaluations.push(result);
             }
             start = end;
         }
@@ -392,7 +426,14 @@ impl SemanticRuleEvaluator for JevRuleEvaluatorAdapter {
             let questions: BTreeMap<String, JevQuestion> = rules
                 .iter()
                 .filter(|rule| is_semantic_rule(rule))
-                .map(|rule| (rule.id.clone(), JevQuestion::Noul))
+                .map(|rule| {
+                    (
+                        rule.id.clone(),
+                        JevQuestion::Noul {
+                            instructions: rule.assertion.clone(),
+                        },
+                    )
+                })
                 .collect();
 
             if !questions.is_empty() && !chunks.is_empty() {
@@ -466,7 +507,7 @@ mod tests {
 
     use super::{
         HttpJevTransport, JevAnswer, JevConfig, JevRequest, JevResponse, JevRuleEvaluatorAdapter,
-        JevTransport,
+        JevTransport, JevTransportError,
     };
     use crate::engine::{EngineMode, EngineStatus};
     use crate::redaction::REDACTED_SECRET;
@@ -476,7 +517,7 @@ mod tests {
     struct ScriptedTransport {
         answers: Mutex<BTreeMap<String, JevAnswer>>,
         calls: AtomicUsize,
-        fail: bool,
+        error: Option<JevTransportError>,
     }
 
     impl ScriptedTransport {
@@ -486,7 +527,7 @@ mod tests {
             Self {
                 answers: Mutex::new(answers),
                 calls: AtomicUsize::new(0),
-                fail: false,
+                error: None,
             }
         }
 
@@ -494,7 +535,7 @@ mod tests {
             Self {
                 answers: Mutex::new(BTreeMap::new()),
                 calls: AtomicUsize::new(0),
-                fail: false,
+                error: None,
             }
         }
 
@@ -502,16 +543,26 @@ mod tests {
             Self {
                 answers: Mutex::new(BTreeMap::new()),
                 calls: AtomicUsize::new(0),
-                fail: true,
+                error: Some(JevTransportError::Transient("offline".to_string())),
+            }
+        }
+
+        fn permanent() -> Self {
+            Self {
+                answers: Mutex::new(BTreeMap::new()),
+                calls: AtomicUsize::new(0),
+                error: Some(JevTransportError::Permanent(
+                    "Jev HTTP 401: invalid key".to_string(),
+                )),
             }
         }
     }
 
     impl JevTransport for ScriptedTransport {
-        fn decide(&self, _request: &JevRequest) -> Result<JevResponse, DomainError> {
+        fn decide(&self, _request: &JevRequest) -> Result<JevResponse, JevTransportError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            if self.fail {
-                return Err(DomainError::External("offline".to_string()));
+            if let Some(error) = self.error.clone() {
+                return Err(error);
             }
             let answers = self.answers.lock().expect("answers lock").clone();
             Ok(JevResponse { answers })
@@ -600,7 +651,7 @@ mod tests {
         let transport = Arc::new(ScriptedTransport {
             answers: Mutex::new(answers),
             calls: AtomicUsize::new(0),
-            fail: false,
+            error: None,
         });
         let adapter = adapter_with(JevConfig::default(), transport);
         let rules = [rule("SEC-JWT-003")];
@@ -692,6 +743,52 @@ mod tests {
     }
 
     #[test]
+    fn permanent_failures_are_not_retried() {
+        let transport = Arc::new(ScriptedTransport::permanent());
+        let adapter = adapter_with(
+            JevConfig {
+                max_retries: 2,
+                ..JevConfig::default()
+            },
+            transport.clone(),
+        );
+        let rules = [rule("SEC-JWT-003")];
+
+        let _ = crate::executor::block_on(adapter.evaluate_batch(
+            vec![CodeChunk::new("a.ts", "typescript", 1, 1, "x")],
+            &rules,
+        ));
+
+        assert_eq!(
+            transport.calls.load(Ordering::Relaxed),
+            1,
+            "invalid-key style failures fail immediately"
+        );
+    }
+
+    #[test]
+    fn questions_carry_the_rule_assertion_as_instructions() {
+        let transport = Arc::new(RecordingTransport::default());
+        let adapter = adapter_with(JevConfig::default(), transport.clone());
+        let rules = [rule("SEC-JWT-003")];
+
+        evaluate(
+            &adapter,
+            vec![CodeChunk::new("a.ts", "typescript", 1, 1, "x")],
+            &rules,
+        );
+
+        let questions = transport.questions.lock().expect("questions lock").clone();
+        assert_eq!(questions.len(), 1);
+        let assertion = serde_json::to_string(&rule("SEC-JWT-003").assertion).expect("json");
+        assert!(
+            questions[0].contains(&assertion),
+            "instructions must embed the rule assertion: {}",
+            questions[0]
+        );
+    }
+
+    #[test]
     fn tier0_rules_are_never_sent_to_jev() {
         let transport = Arc::new(ScriptedTransport::clean());
         let adapter = adapter_with(JevConfig::default(), transport.clone());
@@ -735,18 +832,24 @@ mod tests {
         assert!(snapshot.last_latency_ms <= snapshot.max_latency_ms);
     }
 
-    /// Transport that records the `state` of every request.
+    /// Transport that records the `state` and serialized questions of every request.
     #[derive(Default)]
     struct RecordingTransport {
         states: Mutex<Vec<String>>,
+        questions: Mutex<Vec<String>>,
     }
 
     impl JevTransport for RecordingTransport {
-        fn decide(&self, request: &JevRequest) -> Result<JevResponse, DomainError> {
+        fn decide(&self, request: &JevRequest) -> Result<JevResponse, JevTransportError> {
             self.states
                 .lock()
                 .expect("states lock")
                 .push(request.state.clone());
+            let questions = serde_json::to_string(&request.questions).expect("questions serialize");
+            self.questions
+                .lock()
+                .expect("questions lock")
+                .push(questions);
             Ok(JevResponse {
                 answers: BTreeMap::new(),
             })

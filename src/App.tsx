@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { MetricsRibbon } from "./components/MetricsRibbon";
 import { ScanBar } from "./components/ScanBar";
@@ -6,6 +6,7 @@ import { FiltersBar } from "./components/FiltersBar";
 import { FindingsFeed } from "./components/FindingsFeed";
 import { PolarRadarCanvas } from "./components/PolarRadarCanvas";
 import { FindingDrawer } from "./components/FindingDrawer";
+import { ApiKeyDialog } from "./components/ApiKeyDialog";
 import { StatusBar } from "./components/StatusBar";
 import {
   EngineStatus,
@@ -43,6 +44,24 @@ export const App: React.FC = () => {
   const [scanStats, setScanStats] = useState<ScanStats | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
+  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
+
+  const refreshEngineStatus = () => {
+    getEngineStatus().then((s) => {
+      if (s) setEngineStatus(s);
+    });
+  };
+
+  // Poll the engine status while a scan runs, so a live -> Mock fallback flips
+  // the badge the moment Jev drops instead of only at scan end.
+  const isScanningRef = useRef(false);
+  isScanningRef.current = isScanning;
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isScanningRef.current) refreshEngineStatus();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Initialize path and status
   useEffect(() => {
@@ -72,9 +91,7 @@ export const App: React.FC = () => {
         setIsScanning(false);
         setScanStats(report.scan);
         // Refresh the engine badge: a scan may have triggered a Mock fallback.
-        getEngineStatus().then((s) => {
-          if (s) setEngineStatus(s);
-        });
+        refreshEngineStatus();
         if (report.findings && report.findings.length > 0) {
           setFindings((prev) => {
             const map = new Map<string, FindingDTO>();
@@ -465,6 +482,16 @@ export const App: React.FC = () => {
         engineStatus={engineStatus}
         scanStats={scanStats}
         isScanning={isScanning}
+        onOpenApiKey={() => setApiKeyDialogOpen(true)}
+      />
+
+      {/* API Key Settings */}
+      <ApiKeyDialog
+        open={apiKeyDialogOpen}
+        engineStatus={engineStatus}
+        onClose={() => setApiKeyDialogOpen(false)}
+        onStatusChange={setEngineStatus}
+        onError={setErrorMessage}
       />
     </div>
   );

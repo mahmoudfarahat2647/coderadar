@@ -64,6 +64,7 @@ pub struct EngineStatus {
     fallback_events: AtomicU64,
     last_latency_ms: AtomicU64,
     max_latency_ms: AtomicU64,
+    total_latency_ms: AtomicU64,
 }
 
 impl EngineStatus {
@@ -76,6 +77,7 @@ impl EngineStatus {
             fallback_events: AtomicU64::new(0),
             last_latency_ms: AtomicU64::new(0),
             max_latency_ms: AtomicU64::new(0),
+            total_latency_ms: AtomicU64::new(0),
         }
     }
 
@@ -89,6 +91,8 @@ impl EngineStatus {
         self.tier1_requests.fetch_add(1, Ordering::Relaxed);
         self.last_latency_ms.store(latency_ms, Ordering::Relaxed);
         self.max_latency_ms.fetch_max(latency_ms, Ordering::Relaxed);
+        self.total_latency_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
     }
 
     /// Record that Jev failed and Mock took over for this batch.
@@ -131,6 +135,7 @@ impl EngineStatus {
             fallback_events: self.fallback_events.load(Ordering::Relaxed),
             last_latency_ms: self.last_latency_ms.load(Ordering::Relaxed),
             max_latency_ms: self.max_latency_ms.load(Ordering::Relaxed),
+            total_latency_ms: self.total_latency_ms.load(Ordering::Relaxed),
         }
     }
 }
@@ -156,6 +161,9 @@ pub struct EngineStatusSnapshot {
     pub last_latency_ms: u64,
     /// Worst Jev latency observed, in milliseconds.
     pub max_latency_ms: u64,
+    /// Sum of all recorded Jev request latencies, in milliseconds
+    /// (`total / tier1_requests` is the mean request latency).
+    pub total_latency_ms: u64,
 }
 
 /// Wraps a primary evaluator and transparently degrades to a fallback.

@@ -79,6 +79,7 @@ export interface EngineStatus {
   fallback_events: number;
   last_latency_ms: number;
   max_latency_ms: number;
+  total_latency_ms: number;
   api_key_configured: boolean;
   api_key_masked?: string | null;
   tier0_rules_count: number;

@@ -61,6 +61,7 @@ const FALLBACK_ENGINE_STATUS: EngineStatus = {
   fallback_events: 0,
   last_latency_ms: 0,
   max_latency_ms: 0,
+  total_latency_ms: 0,
   api_key_configured: false,
   api_key_masked: null,
   tier0_rules_count: 3,

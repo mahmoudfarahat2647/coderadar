@@ -84,13 +84,13 @@
 ## Phase 5 — Jev Tier 1 + privacy layer ✅ (see `coderadar-specs/12-PHASE-5-JEV-TIER1-AND-PRIVACY-LAYER.md`)
 **Goal:** swap Mock for real semantic evaluation without touching use cases.
 
-- [x] `JevRuleEvaluatorAdapter` (`reqwest`, HTTP/2, batches of 10, connection pool)
+- [x] `JevRuleEvaluatorAdapter` (`reqwest`, HTTP/2, one decision request per chunk over `batch_size` scheduling windows, connection pool)
 - [x] Secret redaction before any outbound payload (+ tests with fake keys)
 - [x] API key stored in OS keychain (`keyring-rs`); auto-fallback to Mock if missing
 - [x] Timeouts, retries, and graceful degradation when offline
-- [x] Benchmark vs the Phase 0 numbers
+- [x] Benchmark vs the Phase 0 numbers — live run 2026-10-17: 19 chunk requests, 0 fallbacks, mean 908 ms / max 1510 ms per request (2 s budget respected; Phase 0 baseline ~0.5–0.6 s warm) — see `CR-SPEC-12 §7.3`
 
-**Gate:** same app, same UI, real findings; unplugging the network falls back to Mock with the badge shown. ✅ PASS — unchanged `SemanticRuleEvaluator` port; redaction before egress; `FallbackRuleEvaluator` + shared `EngineStatus` flip the status-bar badge to *Mock Mode (fallback)* on any Jev failure; hermetic adapter tests + MSRV 1.82 gate green *(CR-SPEC-12)*.
+**Gate:** same app, same UI, real findings; unplugging the network falls back to Mock with the badge shown. ✅ PASS — unchanged `SemanticRuleEvaluator` port; redaction before egress; `FallbackRuleEvaluator` + shared `EngineStatus` flip the status-bar badge to *Mock Mode (fallback)* on Jev failure (status polled live during scans); hermetic adapter tests + MSRV 1.82 gate green *(CR-SPEC-12)*.
 
 ## Phase 6 — Diff modal, safe patching, history
 **Goal:** act on findings safely and track progress.
