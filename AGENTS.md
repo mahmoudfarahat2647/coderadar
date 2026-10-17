@@ -18,7 +18,7 @@
 - All four crates enable `#![deny(missing_docs)]` in `lib.rs`; `scripts/check-architecture.sh` greps sources/Toml files directly, so comments mentioning forbidden crate names in code (not manifests) can still trip it.
 
 ## MSRV pins — avoid casual `cargo update`
-- Workspace `rust-version = "1.82"`. Exact pins exist because newer releases require Rust 1.85+ (edition2024): `ignore =0.4.23`, `globset =0.4.15`, `tempfile =3.14.0` in Cargo.toml; `tree-sitter-language 0.1.5` and `indexmap 2.7.1` pinned in `Cargo.lock`. After any dependency/lockfile change run the 1.82 check above.
+- Workspace `rust-version = "1.82"`. Exact pins exist because newer releases require Rust 1.85+ (edition2024): `ignore =0.4.23`, `globset =0.4.15`, `tempfile =3.14.0` in Cargo.toml; `tree-sitter-language 0.1.5`, `indexmap 2.7.1`, `icu_* 2.2.0`, and `idna_adapter 1.1.0` pinned in `Cargo.lock`. After any dependency/lockfile change run the 1.82 check above.
 
 ## Rules manifest contract
 - `rules/manifest.json` is `include_str!`-embedded at compile time (`rules_manifest.rs`) — edits need a rebuild; keep the file at its exact path.
