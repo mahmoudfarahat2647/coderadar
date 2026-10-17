@@ -5,6 +5,8 @@ members = [
     "crates/coderadar-usecases",
     "crates/coderadar-adapters",
     "crates/coderadar-infrastructure",
+]
+exclude = [
     "src-tauri",
 ]
 

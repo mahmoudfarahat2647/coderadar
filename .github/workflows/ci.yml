@@ -56,11 +56,15 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo build
-        run: cargo build --workspace --all-targets --verbose
+        run: |
+          cargo build --workspace --all-targets --verbose
+          cargo build --manifest-path src-tauri/Cargo.toml --verbose
       - name: cargo test
         run: cargo test --workspace --all-targets --verbose
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   msrv:
     name: MSRV build
@@ -73,9 +77,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       # Keep in sync with `rust-version` in the workspace Cargo.toml.
       # Verifies the core Clean Architecture crates (Layers 1-4) on the declared MSRV.
-      # The Tauri desktop shell is verified on stable Rust in the build-test-clippy job.
       - uses: dtolnay/rust-toolchain@1.82.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo check on the declared MSRV
-        run: cargo check --workspace --exclude coderadar-desktop --all-targets
+        run: cargo check --workspace --all-targets
 
