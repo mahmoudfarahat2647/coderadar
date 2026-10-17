@@ -9,7 +9,7 @@
 - Test: `cargo test --workspace --all-targets` — single test: `cargo test -p coderadar-infrastructure --test scan_pipeline`
 - Lint: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` (CI sets `RUSTFLAGS: -D warnings`, so any warning fails)
 - Architecture guard: `bash scripts/check-architecture.sh` (needs Git Bash/WSL on Windows; the same rules are re-checked by `crates/coderadar-infrastructure/tests/architecture_boundaries.rs`)
-- MSRV gate: `cargo +1.82.0 check --workspace --all-targets`
+- MSRV gate: `cargo +1.82.0 check --workspace --exclude coderadar-desktop --all-targets`
 - CLI: `cargo run -p coderadar-infrastructure --bin coderadar -- scan <path> [--pretty]` (JSON on stdout; exit 0 = ok, 1 = runtime error, 2 = usage error)
 
 ## Enforced architecture (compiler + CI, not suggestive)

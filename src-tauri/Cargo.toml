@@ -3,7 +3,6 @@ name = "coderadar-desktop"
 description = "CodeRadar Studio Layer 4 (Frameworks & Drivers): Tauri 2.0 desktop shell."
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

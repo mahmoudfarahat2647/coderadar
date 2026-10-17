@@ -72,8 +72,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       # Keep in sync with `rust-version` in the workspace Cargo.toml.
+      # Verifies the core Clean Architecture crates (Layers 1-4) on the declared MSRV.
+      # The Tauri desktop shell is verified on stable Rust in the build-test-clippy job.
       - uses: dtolnay/rust-toolchain@1.82.0
       - uses: Swatinem/rust-cache@v2
       - name: cargo check on the declared MSRV
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --exclude coderadar-desktop --all-targets
 
