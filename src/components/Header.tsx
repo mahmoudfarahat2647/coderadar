@@ -67,13 +67,17 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
           <button
             onClick={() => onTabChange("radar")}
-            className="px-3 py-1.5 rounded-md transition-colors text-text-muted hover:text-text-primary hover:bg-surface-elevated/50 flex items-center space-x-1.5"
-            title="360° Polar Radar Canvas is scheduled for Phase 4"
+            className={`px-3 py-1.5 rounded-md transition-colors flex items-center space-x-1.5 ${
+              activeTab === "radar"
+                ? "bg-surface-elevated text-secondary border border-border-subtle"
+                : "text-text-muted hover:text-text-primary hover:bg-surface-elevated/50"
+            }`}
+            title="360° Polar Radar Canvas (Phase 4)"
           >
-            <Radar className="w-3.5 h-3.5 text-tertiary" />
+            <Radar className="w-3.5 h-3.5 text-secondary" />
             <span>Polar Radar</span>
-            <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-[#00B4D8]/10 text-tertiary border border-tertiary/20">
-              P4
+            <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-secondary/15 text-secondary border border-secondary/30">
+              360°
             </span>
           </button>
           <button

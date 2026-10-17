@@ -5,7 +5,9 @@ import { FindingDTO, Severity } from "../types";
 interface FindingsFeedProps {
   findings: FindingDTO[];
   selectedFinding: FindingDTO | null;
+  hoveredFindingId?: string | null;
   onSelectFinding: (finding: FindingDTO) => void;
+  onHoverFinding?: (id: string | null) => void;
   onToggleResolve: (id: string, e: React.MouseEvent) => void;
   isScanning: boolean;
 }
@@ -13,7 +15,9 @@ interface FindingsFeedProps {
 export const FindingsFeed: React.FC<FindingsFeedProps> = ({
   findings,
   selectedFinding,
+  hoveredFindingId,
   onSelectFinding,
+  onHoverFinding,
   onToggleResolve,
   isScanning,
 }) => {
@@ -80,13 +84,19 @@ export const FindingsFeed: React.FC<FindingsFeedProps> = ({
             ? `:${finding.line_start}`
             : `:${finding.line_start}-${finding.line_end}`;
 
+        const isHovered = hoveredFindingId === finding.id;
+
         return (
           <div
             key={finding.id}
             onClick={() => onSelectFinding(finding)}
-            className={`p-3.5 transition-colors cursor-pointer group flex items-start justify-between gap-4 ${
+            onMouseEnter={() => onHoverFinding?.(finding.id)}
+            onMouseLeave={() => onHoverFinding?.(null)}
+            className={`p-3.5 transition-all cursor-pointer group flex items-start justify-between gap-4 ${
               isSelected
-                ? "bg-surface-elevated/90 border-l-2 border-l-secondary"
+                ? "bg-surface-elevated/90 border-l-2 border-l-secondary shadow-md"
+                : isHovered
+                ? "bg-surface-elevated/70 border-l-2 border-l-tertiary"
                 : "hover:bg-surface-elevated/40"
             } ${finding.resolved ? "opacity-60 bg-surface-canvas/40" : ""}`}
           >
