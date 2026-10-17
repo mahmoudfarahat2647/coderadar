@@ -1,6 +1,21 @@
 use crate::finding::Finding;
 use crate::rule::EvaluationEngine;
 
+/// What kind of context a [`CodeChunk`] carries.
+///
+/// Chunk-scope rules (`CR-SPEC-04 §8`) are evaluated against AST windows, while
+/// file/module-scope rules (for example `ARCH-DEP-001`) need the whole file —
+/// the scanner emits one [`ChunkKind::FileModule`] chunk per scanned file in
+/// addition to its AST windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ChunkKind {
+    /// A function/class-sized AST window (up to 300 LOC / 12 KB).
+    #[default]
+    AstWindow,
+    /// The complete source of one file, for file/module-scope rules.
+    FileModule,
+}
+
 /// A window of source code submitted for rule evaluation.
 ///
 /// The chunker (Phase 2) slices files into these windows; use cases and the
@@ -11,6 +26,8 @@ pub struct CodeChunk {
     pub file_path: String,
     /// Detected language, e.g. `typescript`.
     pub language: String,
+    /// Whether this is an AST window or the whole file context.
+    pub kind: ChunkKind,
     /// First line of the chunk (1-based, inclusive).
     pub start_line: u32,
     /// Last line of the chunk (1-based, inclusive).
@@ -25,7 +42,7 @@ impl CodeChunk {
     /// Maximum byte size per chunk (12 KB).
     pub const MAX_BYTES: usize = 12 * 1024;
 
-    /// Build a chunk from its raw parts.
+    /// Build an [`ChunkKind::AstWindow`] chunk from its raw parts.
     pub fn new(
         file_path: impl Into<String>,
         language: impl Into<String>,
@@ -36,7 +53,27 @@ impl CodeChunk {
         Self {
             file_path: file_path.into(),
             language: language.into(),
+            kind: ChunkKind::AstWindow,
             start_line,
+            end_line,
+            content: content.into(),
+        }
+    }
+
+    /// Build a whole-file [`ChunkKind::FileModule`] chunk.
+    ///
+    /// `end_line` is the number of source lines the file contains.
+    pub fn file_module(
+        file_path: impl Into<String>,
+        language: impl Into<String>,
+        end_line: u32,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            file_path: file_path.into(),
+            language: language.into(),
+            kind: ChunkKind::FileModule,
+            start_line: 1,
             end_line,
             content: content.into(),
         }

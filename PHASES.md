@@ -46,16 +46,16 @@
 ## Phase 2 — Scanner, Tier 0, Mock engine (no UI yet)
 **Goal:** a working engine you can run from the terminal.
 
-- [ ] `ParallelFileScanner` using `ignore::WalkParallel` (respects `.gitignore`)
-- [ ] Bloat guard: skip files > 1 MB, lines > 1,000 chars, `node_modules`, `vendor`, `target`
-- [ ] Chunker: max 300 LOC / 12 KB per chunk (tree-sitter for TS/JS)
-- [ ] `.coderadar.json` layer mapping + fallback conventions
-- [ ] Tier 0 rules: `ARCH-DEP-001`, `SEC-TOK-002`, `SEC-TLS-005`
-- [ ] `MockRuleEvaluator` (regex heuristics) for the remaining rules
-- [ ] Simple CLI: `coderadar scan <path>` prints findings as JSON
-- [ ] Test fixtures: a small repo with known bugs and expected findings
+- [x] `ParallelFileScanner` using `ignore::WalkParallel` (respects `.gitignore`)
+- [x] Bloat guard: skip files > 1 MB, lines > 1,000 chars, `node_modules`, `vendor`, `target`
+- [x] Chunker: max 300 LOC / 12 KB per chunk (tree-sitter for TS/JS)
+- [x] `.coderadar.json` layer mapping + fallback conventions
+- [x] Tier 0 rules: `ARCH-DEP-001`, `SEC-TOK-002`, `SEC-TLS-005`
+- [x] `MockRuleEvaluator` (regex heuristics) for the remaining rules
+- [x] Simple CLI: `coderadar scan <path>` prints findings as JSON
+- [x] Test fixtures: a small repo with known bugs and expected findings
 
-**Gate:** CLI scans a 5,000-file repo without running out of memory; fixtures produce the expected findings.
+**Gate:** CLI scans a 5,000-file repo without running out of memory; fixtures produce the expected findings. ✅ PASS — 5,000 files in 1.56 s at 9.3 MB peak (Windows release, local); Linux `VmHWM < 45 MB` asserted by `tests/memory_budget.rs` in CI; fixture findings 15/15 exact *(CR-SPEC-09 §1)*.
 
 ## Phase 3 — Tauri shell, dashboard, findings feed
 **Goal:** the engine is visible in a desktop window.

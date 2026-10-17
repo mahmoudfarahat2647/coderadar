@@ -1,0 +1,9 @@
+{
+  "architecture_pattern": "clean_architecture",
+  "layers": {
+    "domain": ["src/domain/**"],
+    "usecases": ["src/usecases/**"],
+    "adapters": ["src/adapters/**"],
+    "infrastructure": ["src/infrastructure/**"]
+  }
+}
