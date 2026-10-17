@@ -1,0 +1,20 @@
+{
+  "description": "Curated fixture repo: every listed finding must be produced, and no other finding may be. (rule_id, file, line_start) triples.",
+  "findings": [
+    { "rule_id": "ARCH-DEP-001", "file": "src/domain/order.ts", "line_start": 1 },
+    { "rule_id": "ARCH-DEP-001", "file": "src/domain/order.ts", "line_start": 2 },
+    { "rule_id": "ARCH-DEP-001", "file": "src/usecases/placeOrder.ts", "line_start": 1 },
+    { "rule_id": "SEC-TOK-002", "file": "src/config/secrets.ts", "line_start": 1 },
+    { "rule_id": "SEC-TOK-002", "file": "src/config/secrets.ts", "line_start": 2 },
+    { "rule_id": "SEC-TOK-002", "file": "src/config/secrets.ts", "line_start": 3 },
+    { "rule_id": "SEC-TLS-005", "file": "src/api/client.ts", "line_start": 1 },
+    { "rule_id": "SEC-TLS-005", "file": "src/api/client.ts", "line_start": 2 },
+    { "rule_id": "SEC-INJ-001", "file": "src/bad/injection.ts", "line_start": 4 },
+    { "rule_id": "SEC-JWT-003", "file": "src/bad/jwt.ts", "line_start": 4 },
+    { "rule_id": "EDGE-NPE-001", "file": "src/edge/npe.ts", "line_start": 6 },
+    { "rule_id": "PERF-NPO-001", "file": "src/edge/loop.ts", "line_start": 6 },
+    { "rule_id": "EDGE-TMO-004", "file": "src/edge/timeout.ts", "line_start": 2 },
+    { "rule_id": "EDGE-PRM-002", "file": "src/edge/timeout.ts", "line_start": 2 },
+    { "rule_id": "SEC-XSS-004", "file": "src/edge/xss.ts", "line_start": 2 }
+  ]
+}

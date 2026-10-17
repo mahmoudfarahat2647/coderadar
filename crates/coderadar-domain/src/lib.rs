@@ -19,7 +19,7 @@ mod score;
 mod severity;
 
 pub use category::FindingCategory;
-pub use chunk::{CodeChunk, RuleEvaluationResult};
+pub use chunk::{ChunkKind, CodeChunk, RuleEvaluationResult};
 pub use error::DomainError;
 pub use finding::Finding;
 pub use rule::{EvaluationEngine, RuleScope, RuleSpec};

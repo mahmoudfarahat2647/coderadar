@@ -18,5 +18,28 @@ coderadar-domain = { workspace = true }
 coderadar-usecases = { workspace = true }
 coderadar-adapters = { workspace = true }
 
+# Parallel file walking that honours `.gitignore` (Phase 2 scanner).
+# Pinned: ignore >= 0.4.24 requires Rust 1.85+ (edition2024), breaking the
+# workspace MSRV job (rust-version = 1.82).
+ignore = "=0.4.23"
+# Glob matching for the `.coderadar.json` layer map. Pinned for the same MSRV
+# reason (newer releases are edition2024).
+globset = "=0.4.15"
+# Tier 0 / Mock heuristic rules.
+regex = "1"
+# Tree-sitter chunker for TS/JS (Phase 2); grammars ship as separate crates.
+# NOTE (MSRV 1.82): `tree-sitter-language` is pinned to 0.1.5 and `indexmap`
+# to 2.7.1 in Cargo.lock — newer releases require Rust 1.85+ (edition2024).
+# Re-run `cargo +1.82.0 check --workspace --all-targets` after any
+# `cargo update`.
+tree-sitter = "0.26"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+# Pinned: tempfile >= 3.15 pulls getrandom 0.4, which requires Rust 1.85+
+# (edition2024) and would break the workspace MSRV job (rust-version = 1.82).
+tempfile = "=3.14.0"
