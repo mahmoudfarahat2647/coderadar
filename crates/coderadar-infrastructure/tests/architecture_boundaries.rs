@@ -92,3 +92,13 @@ fn adapters_never_depend_on_infrastructure() {
         "coderadar-adapters must not depend on coderadar-infrastructure"
     );
 }
+
+#[test]
+fn infrastructure_never_depends_on_desktop() {
+    let metadata = workspace_metadata();
+    let deps = dependency_names(&metadata, "coderadar-infrastructure");
+    assert!(
+        !deps.iter().any(|dep| dep == "coderadar-desktop"),
+        "coderadar-infrastructure must not depend on coderadar-desktop"
+    );
+}

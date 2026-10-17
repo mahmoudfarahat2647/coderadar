@@ -21,13 +21,14 @@ mod router;
 mod rules_manifest;
 mod scanner;
 mod sinks;
+mod throttler;
 mod tier0;
 
 pub use chunker::{detect_language, Chunker, JAVASCRIPT, TYPESCRIPT};
-pub use composition::scan_project;
+pub use composition::{scan_project, scan_project_streaming};
 pub use layer_map::{LayerMap, LayerMapSource, ProjectLayer};
 pub use mock::MockRuleEvaluator;
-pub use pipeline::{ScanOutcome, ScanPipeline};
+pub use pipeline::{FindingBatchCallback, ScanOutcome, ScanPipeline};
 pub use report::{
     FindingReport, ScanReport, ScanStatsReport, SessionReport, SeverityTotals, ToolInfo,
 };
@@ -35,4 +36,7 @@ pub use router::RuleEngineRouter;
 pub use rules_manifest::RuleManifest;
 pub use scanner::{ParallelFileScanner, MAX_FILE_BYTES, MAX_LINE_LENGTH};
 pub use sinks::CollectingChunkSink;
+pub use throttler::{
+    FindingBatch, FindingThrottler, ThrottlerHandle, ThrottlerSender, DEFAULT_FLUSH_INTERVAL,
+};
 pub use tier0::Tier0RuleEvaluator;

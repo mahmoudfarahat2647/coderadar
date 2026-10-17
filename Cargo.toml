@@ -6,6 +6,9 @@ members = [
     "crates/coderadar-adapters",
     "crates/coderadar-infrastructure",
 ]
+exclude = [
+    "src-tauri",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,4 +1,5 @@
 use coderadar_domain::Finding;
+use serde::{Deserialize, Serialize};
 
 use crate::radar::PolarCoordinate;
 
@@ -6,7 +7,7 @@ use crate::radar::PolarCoordinate;
 ///
 /// Inner entities are never serialized across a boundary (`CR-SPEC-02 §3`); the
 /// webview receives this flat DTO instead.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FindingDTO {
     /// Stable finding identifier.
     pub id: String,
@@ -18,12 +19,16 @@ pub struct FindingDTO {
     pub line_end: u32,
     /// Rule that produced the finding.
     pub rule_id: String,
+    /// Review pillar / category token.
+    pub category: String,
     /// Severity token.
     pub severity: String,
     /// Associated CWE, when applicable.
     pub cwe: Option<String>,
     /// Short title.
     pub title: String,
+    /// Detailed explanation of the finding.
+    pub description: String,
     /// Polar radius for the radar.
     pub radar_r: f32,
     /// Polar angle (degrees) for the radar.
@@ -39,9 +44,11 @@ impl FindingDTO {
             line_start: finding.line_start,
             line_end: finding.line_end,
             rule_id: finding.rule_id.clone(),
+            category: finding.category.as_str().to_string(),
             severity: finding.severity.as_str().to_string(),
             cwe: finding.cwe.clone(),
             title: finding.title.clone(),
+            description: finding.description.clone(),
             radar_r: coordinate.radius,
             radar_theta: coordinate.angle_deg,
         }

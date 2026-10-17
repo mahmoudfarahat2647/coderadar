@@ -49,6 +49,7 @@ version = "0.1.0"
 dependencies = [
  "coderadar-domain",
  "coderadar-usecases",
+ "serde",
 ]
 
 [[package]]
