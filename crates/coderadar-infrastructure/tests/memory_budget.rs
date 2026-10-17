@@ -98,6 +98,10 @@ fn five_thousand_file_scan_stays_under_the_memory_budget() {
         "scan failed with {status} (peak VmHWM: {peak_kb} kB)"
     );
     assert!(
+        peak_kb > 0,
+        "no VmHWM sample was captured before the process exited, so the 45 MB budget was never actually measured"
+    );
+    assert!(
         peak_kb < BUDGET_KB,
         "peak VmHWM was {peak_kb} kB, exceeding the 45 MB budget ({BUDGET_KB} kB)"
     );

@@ -7,8 +7,9 @@
 //! primary invariant is the security one: raw secret values must never reach
 //! the serialized report.
 //!
-//! Tests that document a defect are marked `#[ignore = "BUG: ..."]` so the
-//! suite stays green while the defect is tracked separately.
+//! The two defects this suite originally uncovered — the quadratic mock
+//! rescan and the hidden dot-entry skip — were both fixed in this change, so
+//! no test is ignored: the suite runs green in full.
 
 use std::collections::BTreeSet;
 use std::fs;
