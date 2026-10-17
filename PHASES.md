@@ -57,17 +57,17 @@
 
 **Gate:** CLI scans a 5,000-file repo without running out of memory; fixtures produce the expected findings. ✅ PASS — 5,000 files in 1.56 s at 9.3 MB peak (Windows release, local); Linux `VmHWM < 45 MB` asserted by `tests/memory_budget.rs` in CI; fixture findings 15/15 exact *(CR-SPEC-09 §1)*.
 
-## Phase 3 — Tauri shell, dashboard, findings feed
+## Phase 3 — Tauri shell, dashboard, findings feed ✅ (see `coderadar-specs/10-PHASE-3-TAURI-SHELL-AND-DASHBOARD.md`)
 **Goal:** the engine is visible in a desktop window.
 
-- [ ] Tauri 2.0 + React 19 + Tailwind setup; dark theme tokens
-- [ ] Native folder picker; Full Scan vs Git Staged Diff toggle
-- [ ] Tauri commands + `FindingDTO` + IPC throttler (flush every 100 ms)
-- [ ] Metrics ribbon, severity/category filters, findings feed
-- [ ] Status bar with Mock Mode badge
-- [ ] Strict webview CSP from the start
+- [x] Tauri 2.0 + React 19 + Tailwind setup; dark theme tokens (`DESIGN.md`)
+- [x] Native folder picker (`@tauri-apps/plugin-dialog`); Full Scan vs Git Staged Diff toggle
+- [x] Tauri commands + `FindingDTO` + IPC throttler (flush every 100 ms)
+- [x] Metrics ribbon, severity/category filters, findings feed
+- [x] Status bar with Mock Mode badge
+- [x] Strict webview CSP from the start
 
-**Gate:** pick a folder, see findings stream in, filters work, UI stays responsive.
+**Gate:** pick a folder, see findings stream in, filters work, UI stays responsive. ✅ PASS — Tauri 2.0 shell + React 19 UI with Supabase Dark tokens, streaming batches via 100 ms throttler, metrics ribbon, interactive filters, remediation drawer, and strict CSP *(CR-SPEC-10)*.
 
 ## Phase 4 — Polar radar canvas
 **Goal:** the signature feature.

@@ -55,6 +55,9 @@ struct SinkState {
     error: Option<DomainError>,
 }
 
+/// Callback invoked with batches of findings as they are evaluated.
+pub type FindingBatchCallback = Arc<dyn Fn(&[Finding]) + Send + Sync>;
+
 /// A [`ChunkSink`] that evaluates bounded batches as chunks stream in.
 ///
 /// The sink owns everything it needs (`Arc`s for the evaluator and rule
@@ -68,6 +71,7 @@ struct BatchingSink {
     module_rules: Arc<[RuleSpec]>,
     ast_batch_size: usize,
     module_batch_size: usize,
+    finding_sink: Option<FindingBatchCallback>,
     state: Mutex<SinkState>,
 }
 
@@ -78,6 +82,7 @@ impl BatchingSink {
         module_rules: Vec<RuleSpec>,
         ast_batch_size: usize,
         module_batch_size: usize,
+        finding_sink: Option<FindingBatchCallback>,
     ) -> Self {
         Self {
             evaluator,
@@ -85,6 +90,7 @@ impl BatchingSink {
             module_rules: module_rules.into(),
             ast_batch_size,
             module_batch_size,
+            finding_sink,
             state: Mutex::new(SinkState::default()),
         }
     }
@@ -118,6 +124,12 @@ impl BatchingSink {
         }
         if !module_batch.is_empty() {
             findings.extend(self.evaluate_chunks(module_batch, &self.module_rules)?);
+        }
+
+        if let Some(sink) = &self.finding_sink {
+            if !findings.is_empty() {
+                sink(&findings);
+            }
         }
 
         let mut state = self.lock_state()?;
@@ -166,6 +178,11 @@ impl ChunkSink for BatchingSink {
 
         match self.evaluate_chunks(batch, rules) {
             Ok(findings) => {
+                if let Some(sink) = &self.finding_sink {
+                    if !findings.is_empty() {
+                        sink(&findings);
+                    }
+                }
                 state.findings.extend(findings);
                 Ok(())
             }
@@ -208,6 +225,21 @@ impl ScanPipeline {
         self
     }
 
+    /// Run a full scan of `root`, notifying `on_findings` as each batch evaluates.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the root is invalid or an evaluator fails.
+    pub fn run_with_callback<F>(
+        &self,
+        root: &Path,
+        on_findings: F,
+    ) -> Result<ScanOutcome, DomainError>
+    where
+        F: Fn(&[Finding]) + Send + Sync + 'static,
+    {
+        self.run_internal(root, Some(Arc::new(on_findings)))
+    }
+
     /// Run a full scan of `root`.
     ///
     /// `git_changeset`-scoped rules are excluded from a `FullScan`: they need
@@ -217,6 +249,14 @@ impl ScanPipeline {
     /// # Errors
     /// Returns [`DomainError`] when the root is invalid or an evaluator fails.
     pub fn run(&self, root: &Path) -> Result<ScanOutcome, DomainError> {
+        self.run_internal(root, None)
+    }
+
+    fn run_internal(
+        &self,
+        root: &Path,
+        finding_sink: Option<FindingBatchCallback>,
+    ) -> Result<ScanOutcome, DomainError> {
         let started_ms = now_ms();
 
         let ast_rules: Vec<RuleSpec> = self
@@ -238,6 +278,7 @@ impl ScanPipeline {
             module_rules,
             self.ast_batch_size,
             self.module_batch_size,
+            finding_sink,
         );
 
         let root_str = root.to_string_lossy().to_string();

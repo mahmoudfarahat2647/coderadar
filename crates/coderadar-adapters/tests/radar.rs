@@ -40,15 +40,22 @@ fn angles_are_normalized_into_zero_to_360() {
 fn dto_carries_radar_coordinates_not_domain_coordinates() {
     let finding = Finding::new("SEC-INJ-001", "src/db.ts", 12, 14)
         .with_severity(Severity::Critical)
+        .with_category(FindingCategory::Security)
         .with_cwe("CWE-89")
         .with_title("SQL injection")
+        .with_description("Unsanitized user input concatenated to SQL statement")
         .with_risk_score(RiskScore::new(0.9).unwrap());
     let coordinate = RadarPresenter::project_to_polar(&finding);
     let dto = FindingDTO::from_finding(&finding, coordinate);
 
     assert_eq!(dto.id, finding.id);
+    assert_eq!(dto.category, "security");
     assert_eq!(dto.severity, "CRITICAL");
     assert_eq!(dto.cwe.as_deref(), Some("CWE-89"));
+    assert_eq!(
+        dto.description,
+        "Unsanitized user input concatenated to SQL statement"
+    );
     assert_eq!(dto.radar_r, coordinate.radius);
     assert_eq!(dto.radar_theta, coordinate.angle_deg);
 }

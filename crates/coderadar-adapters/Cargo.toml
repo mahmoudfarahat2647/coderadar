@@ -16,3 +16,4 @@ workspace = true
 [dependencies]
 coderadar-domain = { workspace = true }
 coderadar-usecases = { workspace = true }
+serde = { version = "1", features = ["derive"] }
