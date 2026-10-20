@@ -4,7 +4,16 @@
  * Gracefully falls back to simulation mode in standard browser previews.
  */
 
-import { EngineStatus, FindingBatch, ScanMode, ScanReport } from "../types";
+import {
+  EngineStatus,
+  FindingBatch,
+  HistoryPointDTO,
+  PatchOutcomeDTO,
+  PatchPreviewDTO,
+  PatchProposalDTO,
+  ScanMode,
+  ScanReport,
+} from "../types";
 
 export const isTauriEnvironment = (): boolean => {
   return (
@@ -156,4 +165,69 @@ export async function startScan(
   throw new Error(
     "Tauri environment not detected. Please run within CodeRadar desktop app."
   );
+}
+
+/**
+ * Phase 6 — Request a safe remediation proposal for a single finding.
+ *
+ * The returned preview carries `proposal: null` when no deterministic fix
+ * exists for the rule (CR-SPEC-13 §5); the modal explains the situation
+ * instead of offering an apply action.
+ *
+ * Read-only: returns `null` in the browser preview where the Rust engine is absent.
+ */
+export async function previewPatch(
+  rootPath: string,
+  filePath: string,
+  ruleId: string
+): Promise<PatchPreviewDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<PatchPreviewDTO>("preview_patch", {
+      rootPath,
+      filePath,
+      ruleId,
+    });
+  }
+  return null;
+}
+
+/**
+ * Phase 6 — Apply a previously previewed proposal atomically.
+ * Mutating: returns `null` in the browser preview where the Rust engine is absent.
+ */
+export async function applyPatch(
+  rootPath: string,
+  proposal: PatchProposalDTO
+): Promise<PatchOutcomeDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<PatchOutcomeDTO>("apply_patch", { rootPath, proposal });
+  }
+  return null;
+}
+
+/**
+ * Phase 6 — Read the persisted SQLite scan history (newest first).
+ * Read-only: degrades to an empty history in the browser preview.
+ *
+ * When `rootPath` is given, only the sessions of that workspace are returned,
+ * so the trend never mixes projects.
+ */
+export async function getScanHistory(
+  limit = 20,
+  rootPath?: string
+): Promise<HistoryPointDTO[]> {
+  if (isTauriEnvironment()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<HistoryPointDTO[]>("get_scan_history", {
+        limit,
+        rootPath: rootPath?.trim() || null,
+      });
+    } catch (e) {
+      console.warn("Failed to read scan history from Tauri:", e);
+    }
+  }
+  return [];
 }

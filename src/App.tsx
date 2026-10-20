@@ -7,6 +7,8 @@ import { FindingsFeed } from "./components/FindingsFeed";
 import { PolarRadarCanvas } from "./components/PolarRadarCanvas";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { ApiKeyDialog } from "./components/ApiKeyDialog";
+import { DiffModal } from "./components/DiffModal";
+import { TrendChart } from "./components/TrendChart";
 import { StatusBar } from "./components/StatusBar";
 import {
   EngineStatus,
@@ -14,6 +16,8 @@ import {
   FilterSeverity,
   FindingBatch,
   FindingDTO,
+  HistoryPointDTO,
+  PatchPreviewDTO,
   ScanMode,
   ScanReport,
   ScanStats,
@@ -22,12 +26,14 @@ import {
 import {
   getDefaultScanPath,
   getEngineStatus,
+  getScanHistory,
   isTauriEnvironment,
   listenToScanBatches,
   openFolderDialog,
+  previewPatch,
   startScan,
 } from "./services/tauri";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, X, Loader2 } from "lucide-react";
 
 export const App: React.FC = () => {
   const [targetPath, setTargetPath] = useState<string>("tests/fixtures/known-bad-repo");
@@ -45,6 +51,10 @@ export const App: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
+  const [diffPreview, setDiffPreview] = useState<PatchPreviewDTO | null>(null);
+  const [patchBusy, setPatchBusy] = useState<boolean>(false);
+  const [historyPoints, setHistoryPoints] = useState<HistoryPointDTO[]>([]);
+  const [scannedPath, setScannedPath] = useState<string>("");
 
   const refreshEngineStatus = () => {
     getEngineStatus().then((s) => {
@@ -56,6 +66,18 @@ export const App: React.FC = () => {
   // the badge the moment Jev drops instead of only at scan end.
   const isScanningRef = useRef(false);
   isScanningRef.current = isScanning;
+
+  // The workspace of the last scan, readable from the async history callbacks
+  // (they are registered once, so they would otherwise close over a stale
+  // empty path).
+  const scannedPathRef = useRef<string>("");
+  scannedPathRef.current = scannedPath;
+
+  // The workspace currently in view, readable from the async history
+  // callbacks as well.
+  const targetPathRef = useRef<string>("");
+  targetPathRef.current = targetPath;
+
   useEffect(() => {
     const interval = setInterval(() => {
       if (isScanningRef.current) refreshEngineStatus();
@@ -92,6 +114,12 @@ export const App: React.FC = () => {
         setScanStats(report.scan);
         // Refresh the engine badge: a scan may have triggered a Mock fallback.
         refreshEngineStatus();
+        // The finished scan is now persisted in the SQLite history.
+        getScanHistory(20, scannedPathRef.current || targetPathRef.current).then(
+          (points) => {
+            setHistoryPoints(points);
+          }
+        );
         if (report.findings && report.findings.length > 0) {
           setFindings((prev) => {
             const map = new Map<string, FindingDTO>();
@@ -114,6 +142,14 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  // The trend follows the workspace in view: the history is queried per
+  // workspace, so switching projects reloads the points of that project.
+  useEffect(() => {
+    getScanHistory(20, targetPath.trim()).then((points) => {
+      setHistoryPoints(points);
+    });
+  }, [targetPath]);
+
   // Handle Tab Switch
   const handleTabChange = (tab: string) => {
     setActiveTab(tab);
@@ -124,6 +160,8 @@ export const App: React.FC = () => {
     } else if (tab === "dashboard") {
       setActiveCategory("ALL");
     } else if (tab === "radar") {
+      setActiveCategory("ALL");
+    } else if (tab === "trend") {
       setActiveCategory("ALL");
     } else if (tab === "prs") {
       setInfoBanner(
@@ -162,6 +200,32 @@ export const App: React.FC = () => {
     }
   };
 
+  // Ask the Rust engine for a safe remediation proposal and open the diff modal
+  const handleProposeFix = async (finding: FindingDTO) => {
+    setErrorMessage(null);
+    // Patch the workspace that produced the finding, never a path typed later.
+    const root = scannedPath;
+    if (!root) {
+      setErrorMessage("Run a scan before proposing a remediation.");
+      return;
+    }
+    setPatchBusy(true);
+    try {
+      const preview = await previewPatch(root, finding.file, finding.rule_id);
+      if (!preview) {
+        setErrorMessage(
+          "Patch preview is only available in the CodeRadar desktop app (Tauri runtime)."
+        );
+        return;
+      }
+      setDiffPreview(preview);
+    } catch (err) {
+      setErrorMessage(typeof err === "string" ? err : String(err));
+    } finally {
+      setPatchBusy(false);
+    }
+  };
+
   // Start Scan
   const handleStartScan = async () => {
     if (!targetPath.trim()) return;
@@ -177,6 +241,9 @@ export const App: React.FC = () => {
     setInfoBanner(null);
     setFindings([]);
     setIsScanning(true);
+    // The findings are relative to the workspace that is actually scanned:
+    // patches must be applied to that root, not to a path typed later on.
+    setScannedPath(targetPath.trim());
 
     if (isTauriEnvironment()) {
       try {
@@ -398,6 +465,14 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {/* Patch Proposal Progress */}
+      {patchBusy && (
+        <div className="bg-tertiary/10 border-b border-tertiary/20 px-4 py-2 text-xs text-tertiary flex items-center space-x-2 select-none">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <span>Preparing remediation proposal…</span>
+        </div>
+      )}
+
       {/* Scan Controller Bar */}
       <ScanBar
         targetPath={targetPath}
@@ -434,26 +509,28 @@ export const App: React.FC = () => {
       {/* Main Content Area (360° Polar Radar Canvas + Findings Feed + Remediation Drawer) */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Pane: Polar Radar Canvas */}
-        <div
-          className={`flex flex-col shrink-0 transition-all duration-300 relative border-r border-border-subtle ${
-            activeTab === "radar"
-              ? "flex-1 w-full"
-              : "w-[420px] lg:w-[480px] xl:w-[540px]"
-          }`}
-        >
-          <PolarRadarCanvas
-            findings={filteredFindings}
-            hoveredFindingId={hoveredFindingId}
-            selectedFinding={selectedFinding}
-            onHoverFinding={setHoveredFindingId}
-            onSelectFinding={setSelectedFinding}
-            cleanPassedPercent={passedPercent}
-            isScanning={isScanning}
-          />
-        </div>
+        {activeTab !== "trend" && (
+          <div
+            className={`flex flex-col shrink-0 transition-all duration-300 relative border-r border-border-subtle ${
+              activeTab === "radar"
+                ? "flex-1 w-full"
+                : "w-[420px] lg:w-[480px] xl:w-[540px]"
+            }`}
+          >
+            <PolarRadarCanvas
+              findings={filteredFindings}
+              hoveredFindingId={hoveredFindingId}
+              selectedFinding={selectedFinding}
+              onHoverFinding={setHoveredFindingId}
+              onSelectFinding={setSelectedFinding}
+              cleanPassedPercent={passedPercent}
+              isScanning={isScanning}
+            />
+          </div>
+        )}
 
         {/* Right Pane: Structured Findings Feed */}
-        {activeTab !== "radar" && (
+        {activeTab !== "radar" && activeTab !== "trend" && (
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-surface-panel/40">
             <FindingsFeed
               findings={filteredFindings}
@@ -467,12 +544,16 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* Quality Trend Chart (Phase 6) */}
+        {activeTab === "trend" && <TrendChart points={historyPoints} />}
+
         {/* Slide-over Finding Detail & Remediation Drawer */}
         {selectedFinding && (
           <FindingDrawer
             finding={selectedFinding}
             onClose={() => setSelectedFinding(null)}
             onToggleResolve={(id) => handleToggleResolve(id)}
+            onProposeFix={handleProposeFix}
           />
         )}
       </div>
@@ -492,6 +573,19 @@ export const App: React.FC = () => {
         onClose={() => setApiKeyDialogOpen(false)}
         onStatusChange={setEngineStatus}
         onError={setErrorMessage}
+      />
+
+      {/* Remediation Diff Modal */}
+      <DiffModal
+        open={diffPreview !== null}
+        preview={diffPreview}
+        rootPath={scannedPath}
+        onClose={() => setDiffPreview(null)}
+        onApplied={(outcome) => {
+          setInfoBanner(outcome.message);
+          setDiffPreview(null);
+        }}
+        onError={(message) => setErrorMessage(message)}
       />
     </div>
   );

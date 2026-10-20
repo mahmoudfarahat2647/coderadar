@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test:geometry": "tsx src/utils/radarGeometry.test.ts",
+    "test:trend": "tsx src/utils/trendGeometry.test.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },

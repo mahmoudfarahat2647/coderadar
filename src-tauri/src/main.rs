@@ -13,7 +13,10 @@ fn main() {
             commands::get_engine_status,
             commands::store_api_key,
             commands::clear_api_key,
-            commands::get_default_scan_path
+            commands::get_default_scan_path,
+            commands::preview_patch,
+            commands::apply_patch,
+            commands::get_scan_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

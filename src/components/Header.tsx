@@ -1,5 +1,5 @@
 import React from "react";
-import { Radar, ShieldAlert, Cpu, GitPullRequest, ExternalLink } from "lucide-react";
+import { Radar, ShieldAlert, Cpu, GitPullRequest, ExternalLink, Activity } from "lucide-react";
 import { EngineStatus } from "../types";
 import { engineTone } from "../utils/engineTone";
 
@@ -80,6 +80,18 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-secondary/15 text-secondary border border-secondary/30">
               360°
             </span>
+          </button>
+          <button
+            onClick={() => onTabChange("trend")}
+            className={`px-3 py-1.5 rounded-md transition-colors flex items-center space-x-1.5 ${
+              activeTab === "trend"
+                ? "bg-surface-elevated text-secondary border border-border-subtle"
+                : "text-text-muted hover:text-text-primary hover:bg-surface-elevated/50"
+            }`}
+            title="Quality Trend (Phase 6)"
+          >
+            <Activity className="w-3.5 h-3.5 text-secondary" />
+            <span>Trend</span>
           </button>
           <button
             onClick={() => onTabChange("prs")}

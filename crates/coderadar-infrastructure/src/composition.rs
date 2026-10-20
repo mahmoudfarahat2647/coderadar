@@ -14,11 +14,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coderadar_domain::DomainError;
-use coderadar_usecases::SemanticRuleEvaluator;
+use coderadar_usecases::{ScanHistoryRepository, SemanticRuleEvaluator};
 
+use crate::executor::block_on;
 use crate::layer_map::LayerMap;
 use crate::mock::MockRuleEvaluator;
-use crate::pipeline::ScanPipeline;
+use crate::pipeline::{ScanOutcome, ScanPipeline};
 use crate::report::ScanReport;
 use crate::router::RuleEngineRouter;
 use crate::rules_manifest::RuleManifest;
@@ -95,6 +96,46 @@ pub fn scan_project_streaming_with<F>(
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
+    run_streaming(root, semantic, flush_interval, on_batch).map(|(_, report)| report)
+}
+
+/// Run a full scan of `root` and persist the finished session in `history`.
+///
+/// The scan itself is unaffected by the history repository: the session is
+/// snapshotted once the pipeline has finished (`CR-SPEC-13 §6`). A
+/// persistence failure is logged and does **not** invalidate the scan.
+///
+/// # Errors
+/// Returns [`DomainError`] when the root path is invalid, the manifest fails
+/// to load, or the scan pipeline aborts. A session that cannot be persisted
+/// is only logged: the report of the finished scan is still returned.
+pub fn scan_project_streaming_with_history<F>(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    flush_interval: Duration,
+    on_batch: F,
+    history: &dyn ScanHistoryRepository,
+) -> Result<ScanReport, DomainError>
+where
+    F: FnMut(FindingBatch) + Send + 'static,
+{
+    let (outcome, report) = run_streaming(root, semantic, flush_interval, on_batch)?;
+    if let Err(error) = block_on(history.save_scan_session(&outcome.session)) {
+        eprintln!("[coderadar] the scan session cannot be persisted: {error}");
+    }
+    Ok(report)
+}
+
+/// Shared streaming implementation used by the public entry points.
+fn run_streaming<F>(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    flush_interval: Duration,
+    on_batch: F,
+) -> Result<(ScanOutcome, ScanReport), DomainError>
+where
+    F: FnMut(FindingBatch) + Send + 'static,
+{
     let manifest = RuleManifest::embedded()?;
     let layer_map = LayerMap::load(root);
     let source = layer_map.source();
@@ -111,10 +152,6 @@ where
     handle.join();
 
     let duration_ms = started.elapsed().as_millis() as u64;
-    Ok(ScanReport::from_scan(
-        &outcome,
-        &manifest,
-        source,
-        duration_ms,
-    ))
+    let report = ScanReport::from_scan(&outcome, &manifest, source, duration_ms);
+    Ok((outcome, report))
 }

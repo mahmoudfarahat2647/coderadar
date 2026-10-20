@@ -11,8 +11,11 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod fixes;
 mod ports;
 
+pub use fixes::{template_for, templated_rule_ids, FixTemplate, PreparePatch, ALL_TEMPLATES};
 pub use ports::{
-    BoxFuture, ChunkSink, ProjectScannerGateway, ScanHistoryRepository, SemanticRuleEvaluator,
+    BoxFuture, ChunkSink, PatchApplier, ProjectScannerGateway, ScanHistoryRepository,
+    SemanticRuleEvaluator, SourceFile, SourceFileReader,
 };

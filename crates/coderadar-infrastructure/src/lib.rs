@@ -14,11 +14,14 @@ mod composition;
 mod engine;
 mod engine_rules;
 mod executor;
+mod hashing;
 mod heuristics;
+mod history;
 mod jev;
 mod keychain;
 mod layer_map;
 mod mock;
+mod patching;
 mod pipeline;
 mod redaction;
 mod report;
@@ -26,17 +29,23 @@ mod router;
 mod rules_manifest;
 mod scanner;
 mod sinks;
+mod source_reader;
 mod throttler;
 mod tier0;
+mod workspace_guard;
 
 pub use chunker::{detect_language, Chunker, JAVASCRIPT, TYPESCRIPT};
 pub use composition::{
-    scan_project, scan_project_streaming, scan_project_streaming_with, scan_project_with,
+    scan_project, scan_project_streaming, scan_project_streaming_with,
+    scan_project_streaming_with_history,
 };
 pub use engine::{
     EngineMode, EngineStatus, EngineStatusSnapshot, FallbackRuleEvaluator, SemanticEngine,
 };
 pub use engine_rules::{is_semantic_rule, GIT_CHANGESET_IDS, TIER0_OWNED_IDS};
+pub use executor::block_on;
+pub use hashing::{sha256_hex, sha256_hex_bytes};
+pub use history::{FindingSnapshot, SqliteScanHistoryRepository};
 pub use jev::{
     HttpJevTransport, JevAnswer, JevConfig, JevQuestion, JevRequest, JevResponse,
     JevRuleEvaluatorAdapter, JevTransport, JevTransportError, DEFAULT_BATCH_SIZE,
@@ -49,6 +58,7 @@ pub use keychain::{
 };
 pub use layer_map::{LayerMap, LayerMapSource, ProjectLayer};
 pub use mock::MockRuleEvaluator;
+pub use patching::SafePatchApplier;
 pub use pipeline::{FindingBatchCallback, ScanOutcome, ScanPipeline};
 pub use redaction::{redact_chunk, redact_source, REDACTED_SECRET};
 pub use report::{
@@ -58,7 +68,9 @@ pub use router::RuleEngineRouter;
 pub use rules_manifest::RuleManifest;
 pub use scanner::{ParallelFileScanner, MAX_FILE_BYTES, MAX_LINE_LENGTH};
 pub use sinks::CollectingChunkSink;
+pub use source_reader::FileSystemSourceReader;
 pub use throttler::{
     FindingBatch, FindingThrottler, ThrottlerHandle, ThrottlerSender, DEFAULT_FLUSH_INTERVAL,
 };
 pub use tier0::Tier0RuleEvaluator;
+pub use workspace_guard::WorkspaceGuard;

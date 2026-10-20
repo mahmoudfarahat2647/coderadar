@@ -25,7 +25,7 @@ impl Wake for ThreadWaker {
 }
 
 /// Block the current thread until `future` completes.
-pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+pub fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::from(Arc::new(ThreadWaker {
         thread: std::thread::current(),
     }));

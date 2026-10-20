@@ -18,7 +18,14 @@
 - All four crates enable `#![deny(missing_docs)]` in `lib.rs`; `scripts/check-architecture.sh` greps sources/Toml files directly, so comments mentioning forbidden crate names in code (not manifests) can still trip it.
 
 ## MSRV pins — avoid casual `cargo update`
-- Workspace `rust-version = "1.82"`. Exact pins exist because newer releases require Rust 1.85+ (edition2024): `ignore =0.4.23`, `globset =0.4.15`, `tempfile =3.14.0` in Cargo.toml; `tree-sitter-language 0.1.5`, `indexmap 2.7.1`, `icu_* 2.2.0`, and `idna_adapter 1.1.0` pinned in `Cargo.lock`. After any dependency/lockfile change run the 1.82 check above.
+- Workspace `rust-version = "1.82"`. Exact pins exist because newer releases require Rust 1.85+ (edition2024): `ignore =0.4.23`, `globset =0.4.15`, `tempfile =3.14.0` in Cargo.toml; `tree-sitter-language 0.1.5`, `indexmap 2.7.1`, `icu_* 2.2.0`, and `idna_adapter 1.1.0` pinned in `Cargo.lock`. Phase 6 added `sha2 =0.10`, `rusqlite =0.32.1` and `libsqlite3-sys =0.30.1` (SQLite is bundled, no system library) — also pinned for the same reason. After any dependency/lockfile change run the 1.82 check above.
+
+## Patch safety (Phase 6)
+- Every file write goes through `WorkspaceGuard` (`crates/coderadar-infrastructure/src/workspace_guard.rs`): absolute paths, `..` components and symlink escapes are refused. `patching.rs::atomic_write` is crate-private for that reason — only `SafePatchApplier` writes.
+- Every write is atomic: staging file in the same directory + `rename` (`patching.rs::atomic_write`). The staging file is created with `create_new`, so a path planted by someone else is never opened, and the target's permissions are copied onto it (a failed copy aborts the write).
+- Every patch carries the SHA-256 of the file it was built against; a mismatch is a `PatchOutcome::Conflict` and nothing is written.
+- Edit offsets coming from the UI must fall on UTF-8 character boundaries (`domain::patch::apply_edits`); anything else is a `PatchOutcome::Rejected`, never a panic.
+- The scan-history database is opened on a background thread (`src-tauri::commands::HistoryHandle`); a persistence failure is logged and never invalidates a finished scan.
 
 ## Rules manifest contract
 - `rules/manifest.json` is `include_str!`-embedded at compile time (`rules_manifest.rs`) — edits need a rebuild; keep the file at its exact path.
@@ -30,6 +37,6 @@
 - CLI tests spawn the real binary via `env!("CARGO_BIN_EXE_coderadar")`.
 
 ## Workflow
-- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phases 0–2 are complete; Phase 3 (Tauri shell) is next.
-- Code, comments, and commit messages are English; `README.md` and `coderadar-specs/*.md` are Arabic — keep them Arabic when editing.
+- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phases 0–6 are complete; Phase 7 (hardening, packaging, release v1.0) is next.
+- Code, comments, and commit messages are English; `README.md` is Arabic — keep it Arabic when editing. `coderadar-specs/*.md` are written in English (the Phase 0-5 documents) — follow the language of the document you edit.
 - Code comments cite spec sections (`CR-SPEC-02 §3`); before changing architecture or domain rules, read the matching `coderadar-specs/` document.
