@@ -8,10 +8,9 @@ use coderadar_adapters::{
     unified_diff, HistoryPointDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
 };
 use coderadar_infrastructure::{
-    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history,
-    CredentialStore, EngineStatusSnapshot, FindingBatch, JevConfig, KeyringCredentialStore,
-    RuleManifest, SafePatchApplier, ScanReport, SemanticEngine, SqliteScanHistoryRepository,
-    TIER0_OWNED_IDS,
+    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history, CredentialStore,
+    EngineStatusSnapshot, FindingBatch, JevConfig, KeyringCredentialStore, RuleManifest,
+    SafePatchApplier, ScanReport, SemanticEngine, SqliteScanHistoryRepository, TIER0_OWNED_IDS,
 };
 use coderadar_usecases::{PatchApplier, PreparePatch, ScanHistoryRepository, SourceFileReader};
 use serde::{Deserialize, Serialize};
@@ -31,7 +30,7 @@ impl AppState {
     /// Resolve the engine from the OS keychain / environment at startup.
     pub fn new() -> Self {
         let history = SqliteScanHistoryRepository::default_path()
-            .and_then(|path| SqliteScanHistoryRepository::open(path))
+            .and_then(SqliteScanHistoryRepository::open)
             .unwrap_or_else(|error| {
                 eprintln!("[coderadar] the scan history is disabled: {error}");
                 SqliteScanHistoryRepository::open_in_memory()
@@ -159,10 +158,7 @@ pub async fn start_scan(
         .map_err(|_| "Engine state lock poisoned".to_string())?
         .evaluator();
 
-    let history = app
-        .state::<AppState>()
-        .history
-        .clone();
+    let history = app.state::<AppState>().history.clone();
 
     let app_handle = app.clone();
     let scan_result = tauri::async_runtime::spawn_blocking(move || {
@@ -222,12 +218,11 @@ pub fn store_api_key(
         .set_api_key(trimmed)
         .map_err(|error| error.to_string())?;
 
-    let rebuilt =
-        SemanticEngine::live(JevConfig {
-            api_key: trimmed.to_string(),
-            ..JevConfig::default()
-        })
-        .unwrap_or_else(|_| SemanticEngine::mock());
+    let rebuilt = SemanticEngine::live(JevConfig {
+        api_key: trimmed.to_string(),
+        ..JevConfig::default()
+    })
+    .unwrap_or_else(|_| SemanticEngine::mock());
 
     let mut engine = state
         .engine
