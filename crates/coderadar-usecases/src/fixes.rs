@@ -167,7 +167,18 @@ fn fix_jwt_decode(content: &str) -> Option<Vec<LineEdit>> {
         let new_args = match parts.len() {
             0 => return None,
             1 => format!("{}, process.env.JWT_SECRET", parts[0]),
-            _ => args.clone(),
+            _ => {
+                // A second argument that is an options object is not a secret:
+                // the secret belongs between the token and the options.
+                let second = parts[1].trim();
+                if second.starts_with('{') {
+                    let rest = parts[1..].join(", ");
+                    format!("{}, process.env.JWT_SECRET, {rest}", parts[0].trim())
+                } else {
+                    // The second argument already is a secret or a key.
+                    args.clone()
+                }
+            }
         };
 
         edits.push(LineEdit::new(
@@ -180,11 +191,7 @@ fn fix_jwt_decode(content: &str) -> Option<Vec<LineEdit>> {
         cursor = close + 1;
     }
 
-    if edits.is_empty() {
-        None
-    } else {
-        Some(edits)
-    }
+    edits_or_none(edits)
 }
 
 // ---------------------------------------------------------------------------
@@ -226,11 +233,7 @@ fn fix_sql_injection(content: &str) -> Option<Vec<LineEdit>> {
         index += 1;
     }
 
-    if edits.is_empty() {
-        None
-    } else {
-        Some(edits)
-    }
+    edits_or_none(edits)
 }
 
 /// Rewrite a single SQL argument into `(sql, [params])`.
@@ -391,11 +394,7 @@ fn fix_hardcoded_secret(content: &str) -> Option<Vec<LineEdit>> {
         index = name_end;
     }
 
-    if edits.is_empty() {
-        None
-    } else {
-        Some(edits)
-    }
+    edits_or_none(edits)
 }
 
 fn is_secret_name(name: &str) -> bool {
@@ -425,80 +424,88 @@ fn is_credential_literal(value: &str) -> bool {
 fn fix_tls(content: &str) -> Option<Vec<LineEdit>> {
     let mut edits = Vec::new();
 
+    let reject_len = "rejectUnauthorized".len();
     let mut cursor = 0usize;
     while let Some(found) = content[cursor..].find("rejectUnauthorized") {
         let key_start = cursor + found;
-        let mut index = key_start + "rejectUnauthorized".len();
-        while index < content.len() && content.as_bytes()[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= content.len() || content.as_bytes()[index] != b':' {
-            cursor = key_start + "rejectUnauthorized".len();
-            continue;
-        }
-        index += 1;
-        while index < content.len() && content.as_bytes()[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if content[index..].starts_with("false") {
-            edits.push(LineEdit::new(
-                line_of(content, index),
-                line_of(content, index + 4),
-                index,
-                index + 5,
-                "true",
-            ));
-            cursor = index + 5;
-            continue;
-        }
-        cursor = key_start + "rejectUnauthorized".len();
-    }
-
-    let mut cursor = 0usize;
-    while let Some(found) = content[cursor..].find("minVersion") {
-        let key_start = cursor + found;
-        let mut index = key_start + "minVersion".len();
-        while index < content.len() && content.as_bytes()[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= content.len() || content.as_bytes()[index] != b':' {
-            cursor = key_start + "minVersion".len();
-            continue;
-        }
-        index += 1;
-        while index < content.len() && content.as_bytes()[index].is_ascii_whitespace() {
-            index += 1;
-        }
-        if index >= content.len() {
-            break;
-        }
-        if let Some((quote, inner, consumed)) = parse_quoted(&content[index..]) {
-            if inner == "TLSv1" || inner == "TLSv1.1" {
-                let literal_end = index + consumed;
+        if let Some(index) = value_offset_after_key(content, key_start, reject_len) {
+            if content[index..].starts_with("false") {
                 edits.push(LineEdit::new(
                     line_of(content, index),
-                    line_of(content, literal_end.saturating_sub(1)),
+                    line_of(content, index + 4),
                     index,
-                    literal_end,
-                    format!("{quote}TLSv1.2{quote}"),
+                    index + 5,
+                    "true",
                 ));
-                cursor = literal_end;
+                cursor = index + 5;
                 continue;
             }
         }
-        cursor = key_start + "minVersion".len();
+        cursor = key_start + reject_len;
     }
 
+    let min_version_len = "minVersion".len();
+    let mut cursor = 0usize;
+    while let Some(found) = content[cursor..].find("minVersion") {
+        let key_start = cursor + found;
+        if let Some(index) = value_offset_after_key(content, key_start, min_version_len) {
+            if index >= content.len() {
+                break;
+            }
+            if let Some((quote, inner, consumed)) = parse_quoted(&content[index..]) {
+                if inner == "TLSv1" || inner == "TLSv1.1" {
+                    let literal_end = index + consumed;
+                    edits.push(LineEdit::new(
+                        line_of(content, index),
+                        line_of(content, literal_end.saturating_sub(1)),
+                        index,
+                        literal_end,
+                        format!("{quote}TLSv1.2{quote}"),
+                    ));
+                    cursor = literal_end;
+                    continue;
+                }
+            }
+        }
+        cursor = key_start + min_version_len;
+    }
+
+    edits_or_none(edits)
+}
+
+/// Offset of the first non-whitespace byte after the `:` of the key at `key_start`.
+///
+/// The key occupies `key_len` bytes starting at `key_start`. Returns `None`
+/// when the key is not followed by a `:`. When the `:` is present but no value
+/// follows it, the returned offset is `content.len()`.
+fn value_offset_after_key(content: &str, key_start: usize, key_len: usize) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut index = key_start + key_len;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if index >= bytes.len() || bytes[index] != b':' {
+        return None;
+    }
+    index += 1;
+    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    Some(index)
+}
+
+// ---------------------------------------------------------------------------
+// Shared text helpers
+// ---------------------------------------------------------------------------
+
+/// `None` when a template produced no edit at all, the edits otherwise.
+fn edits_or_none(edits: Vec<LineEdit>) -> Option<Vec<LineEdit>> {
     if edits.is_empty() {
         None
     } else {
         Some(edits)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared text helpers
-// ---------------------------------------------------------------------------
 
 /// 1-based line number of a byte offset.
 fn line_of(content: &str, offset: usize) -> u32 {
@@ -696,6 +703,28 @@ mod tests {
         let edits = fix_jwt_decode(content).expect("template matches");
         let patched = apply(content, &edits);
         assert_eq!(patched, "const decoded = jwt.verify(token, secret);\n");
+    }
+
+    #[test]
+    fn jwt_decode_with_an_options_argument_gains_the_secret_before_it() {
+        let content = "const decoded = jwt.decode(token, { complete: true });\n";
+        let edits = fix_jwt_decode(content).expect("template matches");
+        let patched = apply(content, &edits);
+        assert_eq!(
+            patched,
+            "const decoded = jwt.verify(token, process.env.JWT_SECRET, { complete: true });\n"
+        );
+    }
+
+    #[test]
+    fn jwt_decode_with_three_arguments_keeps_its_secret() {
+        let content = "const decoded = jwt.decode(token, secret, { complete: true });\n";
+        let edits = fix_jwt_decode(content).expect("template matches");
+        let patched = apply(content, &edits);
+        assert_eq!(
+            patched,
+            "const decoded = jwt.verify(token, secret, { complete: true });\n"
+        );
     }
 
     #[test]
