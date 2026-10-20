@@ -9,8 +9,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use coderadar_domain::{
-    CodeChunk, DomainError, RuleEvaluationResult, RuleSpec, ScanMode, ScanSession,
-    ScanSessionSummary,
+    CodeChunk, DomainError, PatchOutcome, PatchProposal, RuleEvaluationResult, RuleSpec, ScanMode,
+    ScanSession, ScanSessionSummary,
 };
 
 /// A boxed, `Send` future returned across an asynchronous port boundary.
@@ -71,4 +71,49 @@ pub trait ScanHistoryRepository: Send + Sync {
         &'a self,
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<ScanSessionSummary>, DomainError>>;
+}
+
+/// A workspace file together with its content fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    /// Full text of the file.
+    pub content: String,
+    /// SHA-256 (hex) of the content.
+    pub sha256: String,
+    /// Number of lines in the content.
+    pub line_count: usize,
+}
+
+/// Reads a file from the workspace and fingerprints it.
+///
+/// The reader is the only way the use cases get access to file content; the
+/// path handling (traversal and symlink guards) lives in the implementation.
+pub trait SourceFileReader: Send + Sync {
+    /// Read `relative_path` inside `root`.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the path escapes the workspace, the file
+    /// does not exist, or it cannot be read.
+    fn read_source<'a>(
+        &'a self,
+        root: &'a str,
+        relative_path: &'a str,
+    ) -> BoxFuture<'a, Result<SourceFile, DomainError>>;
+}
+
+/// Applies a [`PatchProposal`] to the workspace.
+pub trait PatchApplier: Send + Sync {
+    /// Apply `proposal` inside `root`.
+    ///
+    /// Implementations must refuse to write when the file on disk no longer
+    /// matches `proposal.original_sha256`, and must write atomically.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the workspace cannot be reached at all.
+    /// A *refused* patch is reported as [`PatchOutcome`], not as an error.
+    fn apply_patch<'a>(
+        &'a self,
+        root: &'a str,
+        proposal: &'a PatchProposal,
+    ) -> BoxFuture<'a, Result<PatchOutcome, DomainError>>;
 }
