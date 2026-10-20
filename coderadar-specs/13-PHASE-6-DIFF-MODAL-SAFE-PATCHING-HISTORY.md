@@ -28,7 +28,7 @@ Two capabilities ship in this phase:
 
 | Task (issue #7) | Component | Path |
 | :--- | :--- | :--- |
-| Patch model (pure, `std` only) | `PatchProposal`, `LineEdit`, `PatchOutcome`, `PatchRejection` | `crates/coderadar-domain/src/patch.rs` |
+| Patch model (pure, `std` only) | `PatchProposal`, `LineEdit`, `PatchOutcome` (`Applied` / `Conflict` / `Rejected`) | `crates/coderadar-domain/src/patch.rs` |
 | Compliance score on a session | `ScanSession::compliance_percent()`, `ScanSessionSummary` extension | `crates/coderadar-domain/src/scan.rs` |
 | Ports for the patch boundary | `SourceFileReader`, `PatchApplier` | `crates/coderadar-usecases/src/ports.rs` |
 | Deterministic fix templates | `SEC-JWT-003`, `SEC-INJ-001`, `SEC-TOK-002`, `SEC-TLS-005` + `PreparePatch` use case | `crates/coderadar-usecases/src/fixes.rs` |
@@ -70,8 +70,9 @@ A patch is applied only when **all** of the following hold. Each one has a dedic
 | 2 | The resolved path is canonicalised and must stay under the canonicalised root, so a symlink that points outside the workspace is rejected | Symlink escape |
 | 3 | The SHA-256 of the file on disk must equal `original_sha256` captured when the diff was generated | Concurrent modification / stale diff |
 | 4 | The edits are re-applied to the *current* file content and must reproduce `new_content` byte for byte | Tampered or mismatched payload |
-| 5 | The new content is written to a temporary file in the same directory, flushed, and then `rename`d over the original | Partial writes / corruption on crash |
-| 6 | The original file mode is copied onto the temporary file before the rename | Permission loss |
+| 5 | The edit offsets must fall on UTF-8 character boundaries, otherwise the payload is rejected | A tampered payload panics the process |
+| 6 | The new content is written to a temporary file in the same directory, flushed, and then `rename`d over the original; the staging file is created with `create_new` | Partial writes / corruption on crash, a planted staging path |
+| 7 | The original file mode is copied onto the temporary file before the rename; a failed copy aborts the write | Permission loss |
 
 On any failure the original file is left untouched and the caller receives a
 `PatchOutcome` that is either `Conflict` (hash mismatch) or `Rejected` (guard failure).
@@ -83,7 +84,7 @@ only produce a line edit that the user reviews in the diff modal before it is ap
 
 | Rule | Tier | Transformation |
 | :--- | :--- | :--- |
-| `SEC-JWT-003` | Tier 1 | `jwt.decode(...)` -> `jwt.verify(...)` (the secret argument is supplied from `process.env.JWT_SECRET` when the call only carried the token) |
+| `SEC-JWT-003` | Tier 1 | `jwt.decode(...)` -> `jwt.verify(...)`: the secret argument is supplied from `process.env.JWT_SECRET` when the call only carried the token, and it is inserted between the token and an options object (`jwt.decode(token, { complete: true })` -> `jwt.verify(token, process.env.JWT_SECRET, { complete: true })`). A call that already carries a secret keeps its arguments. |
 | `SEC-INJ-001` | Tier 1 | Concatenated / interpolated SQL -> parameterised query (`?` placeholders + parameter array) |
 | `SEC-TOK-002` | Tier 0 | Hardcoded credential literal -> `process.env.<SCREAMING_SNAKE_NAME>` |
 | `SEC-TLS-005` | Tier 0 | `rejectUnauthorized: false` -> `true`, `TLSv1`/`TLSv1.1` -> `TLSv1.2` |
@@ -91,6 +92,12 @@ only produce a line edit that the user reviews in the diff modal before it is ap
 Every template is *conservative*: when the pattern does not match exactly, no proposal is
 produced and the modal explains that no deterministic fix exists for that finding. LLM based
 fixes remain Phase 8.
+
+**Known limitation:** the `SEC-INJ-001` template only rewrites a single quoted literal that is
+concatenated with one identifier (`"SELECT ... " + name`). A chain that interleaves several
+literals and identifiers (`"SELECT ... '" + name + "'"`) is left alone, because dropping the
+value-quoting literals is not a safe text transformation. Such findings are reported as "no
+deterministic fix available" in the diff modal.
 
 ## 6. SQLite history
 
@@ -110,7 +117,8 @@ Table `scan_sessions`:
 | `findings_json` | TEXT | JSON snapshot of the findings |
 
 The repository is opened on a background thread (`spawn_blocking`) so the UI thread is never
-blocked by SQLite, and every write is a single transaction.
+blocked by SQLite, and every write is a single transaction. A persistence failure is logged and
+never invalidates a finished scan.
 
 ## 7. IPC contract
 
@@ -120,7 +128,7 @@ Commands (Tauri, `src-tauri/src/commands.rs`):
 | :--- | :--- | :--- |
 | `preview_patch` | `root_path`, `file_path`, `rule_id` | `PatchPreviewDTO` |
 | `apply_patch` | `root_path`, `proposal` | `PatchOutcomeDTO` |
-| `get_scan_history` | `limit` | `Vec<HistoryPointDTO>` |
+| `get_scan_history` | `limit`, `root_path` (optional) | `Vec<HistoryPointDTO>` |
 
 DTO shapes (snake_case field names, matching the existing `FindingDTO` convention):
 
@@ -163,6 +171,13 @@ DTO shapes (snake_case field names, matching the existing `FindingDTO` conventio
   "compliance_percent": 58 }
 ```
 
+`PatchPreviewDTO.proposal` is `null` when the finding has no deterministic fix: the preview still
+carries the fingerprint of the untouched file, and the modal explains that no template matched.
+
+`get_scan_history` takes an optional `root_path`: the workspace is canonicalised exactly like the
+stored session (`infrastructure::canonical_root`) and only the sessions of that workspace are
+returned, so the trend never mixes projects and the limit applies per workspace.
+
 ## 8. UI
 
 * **Diff modal** (`src/components/DiffModal.tsx`) follows the `ApiKeyDialog` pattern: fixed
@@ -179,10 +194,10 @@ DTO shapes (snake_case field names, matching the existing `FindingDTO` conventio
 
 | Requirement | Test |
 | :--- | :--- |
-| A modified file is never corrupted or overwritten unsafely | `crates/coderadar-infrastructure/tests/patch_safety.rs` (8 cases) and `crates/coderadar-infrastructure/tests/patch_flow.rs` (4 end-to-end cases) |
-| History shows two or more scans with a trend | `crates/coderadar-infrastructure/tests/scan_history.rs` (6 cases) + `src/utils/trendGeometry.test.ts` (5 assertions) |
-| Templates are deterministic and conservative | `crates/coderadar-usecases/src/fixes.rs` (10 unit tests) |
-| The patch model is pure | `crates/coderadar-domain/tests/patch.rs` (8 tests) |
+| A modified file is never corrupted or overwritten unsafely | `crates/coderadar-infrastructure/tests/patch_safety.rs` (9 cases) and `crates/coderadar-infrastructure/tests/patch_flow.rs` (4 end-to-end cases) |
+| History shows two or more scans with a trend | `crates/coderadar-infrastructure/tests/scan_history.rs` (9 cases) + `src/utils/trendGeometry.test.ts` (5 invariant blocks) |
+| Templates are deterministic and conservative | `crates/coderadar-usecases/src/fixes.rs` (12 unit tests) |
+| The patch model is pure | `crates/coderadar-domain/tests/patch.rs` (11 tests) |
 | The domain stays free of I/O | `crates/coderadar-infrastructure/tests/architecture_boundaries.rs` + `scripts/check-architecture.sh` |
 
 The same gates run in CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` and
@@ -195,6 +210,7 @@ the MSRV 1.82 check.
 | The file still matches the previewed fingerprint | `applied` (atomic write) |
 | The file changed after the preview | `conflict` - nothing is written |
 | The payload does not match the current content | `rejected` - nothing is written |
+| The edit offsets are not on a character boundary | `rejected` - nothing is written |
 | `../outside.ts` | `rejected` - the workspace guard refuses it |
 | An absolute path | `rejected` |
 | A symlink inside the workspace pointing outside | `rejected` |
