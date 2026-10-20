@@ -102,11 +102,13 @@ where
 /// Run a full scan of `root` and persist the finished session in `history`.
 ///
 /// The scan itself is unaffected by the history repository: the session is
-/// snapshotted once the pipeline has finished (`CR-SPEC-13 §6`).
+/// snapshotted once the pipeline has finished (`CR-SPEC-13 §6`). A
+/// persistence failure is logged and does **not** invalidate the scan.
 ///
 /// # Errors
 /// Returns [`DomainError`] when the root path is invalid, the manifest fails
-/// to load, the scan pipeline aborts, or the session cannot be persisted.
+/// to load, or the scan pipeline aborts. A session that cannot be persisted
+/// is only logged: the report of the finished scan is still returned.
 pub fn scan_project_streaming_with_history<F>(
     root: &Path,
     semantic: Arc<dyn SemanticRuleEvaluator>,
@@ -118,7 +120,9 @@ where
     F: FnMut(FindingBatch) + Send + 'static,
 {
     let (outcome, report) = run_streaming(root, semantic, flush_interval, on_batch)?;
-    block_on(history.save_scan_session(&outcome.session))?;
+    if let Err(error) = block_on(history.save_scan_session(&outcome.session)) {
+        eprintln!("[coderadar] the scan session cannot be persisted: {error}");
+    }
     Ok(report)
 }
 

@@ -8,8 +8,12 @@ use std::sync::Arc;
 
 use coderadar_adapters::unified_diff;
 use coderadar_domain::PatchOutcome;
-use coderadar_infrastructure::{block_on, sha256_hex, FileSystemSourceReader, SafePatchApplier};
+use coderadar_infrastructure::{sha256_hex, FileSystemSourceReader, SafePatchApplier};
 use coderadar_usecases::{PatchApplier, PreparePatch, SourceFileReader};
+
+mod common;
+
+use common::block_on;
 
 const JWT_FILE: &str = "src/bad/jwt.ts";
 

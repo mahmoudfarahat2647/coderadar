@@ -327,8 +327,7 @@ impl ScanPipeline {
         });
 
         let finished_ms = now_ms();
-        let root_dir = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        let root_dir = root_dir.to_string_lossy().replace('\\', "/");
+        let root_dir = crate::workspace_guard::canonical_root(root);
         let mut session = ScanSession::new(
             format!("scan-{started_ms}"),
             root_dir,

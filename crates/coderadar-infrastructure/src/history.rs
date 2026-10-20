@@ -147,6 +147,26 @@ fn sqlite_error(context: &str, error: rusqlite::Error) -> DomainError {
     DomainError::External(format!("{context}: {error}"))
 }
 
+/// Run `work` on a dedicated worker thread and return its outcome.
+///
+/// `rusqlite` is a **blocking** driver: the statement is executed off the
+/// calling thread so the UI thread is never blocked by disk access. The
+/// result travels back through a one-shot channel; when the channel is
+/// broken the failure is reported with the given `context` wording.
+fn dispatch<T: Send + 'static>(
+    context: &str,
+    work: impl FnOnce() -> Result<T, DomainError> + Send + 'static,
+) -> Result<T, DomainError> {
+    let (sender, receiver) = sync_channel(1);
+    std::thread::spawn(move || {
+        let result = work();
+        let _ = sender.send(result);
+    });
+    receiver
+        .recv()
+        .map_err(|error| DomainError::External(format!("{context}: {error}")))?
+}
+
 /// Parse a persisted scan mode.
 fn parse_mode(value: &str) -> ScanMode {
     match value {
@@ -251,14 +271,9 @@ impl SqliteScanHistoryRepository {
     pub fn load_snapshots(&self, session_id: &str) -> Result<Vec<FindingSnapshot>, DomainError> {
         let connection = Arc::clone(&self.connection);
         let session_id = session_id.to_string();
-        let (sender, receiver) = sync_channel(1);
-        std::thread::spawn(move || {
-            let result = read_snapshots(&connection, &session_id);
-            let _ = sender.send(result);
-        });
-        receiver.recv().map_err(|error| {
-            DomainError::External(format!("the history reader thread failed: {error}"))
-        })?
+        dispatch("the history reader thread failed", move || {
+            read_snapshots(&connection, &session_id)
+        })
     }
 }
 
@@ -298,10 +313,16 @@ fn write_record(
 }
 
 /// Read the most recent summaries, newest first.
+///
+/// When `root` is given, only the sessions of that workspace are returned. The
+/// workspace is canonicalised exactly like the stored session, so the filter
+/// matches whatever spelling the caller used.
 fn read_summaries(
     connection: &Arc<Mutex<Connection>>,
     limit: usize,
+    root: Option<&str>,
 ) -> Result<Vec<ScanSessionSummary>, DomainError> {
+    let root = root.map(|root| crate::workspace_guard::canonical_root(std::path::Path::new(root)));
     let guard = connection
         .lock()
         .map_err(|_| DomainError::External("the history database is poisoned".to_string()))?;
@@ -310,12 +331,13 @@ fn read_summaries(
             "SELECT id, root_dir, mode, finished_at_unix_ms, files_scanned,
                     total_findings, critical, high, medium, low, compliance_percent
              FROM scan_sessions
+             WHERE ?2 IS NULL OR root_dir = ?2
              ORDER BY finished_at_unix_ms DESC, id DESC
              LIMIT ?1",
         )
         .map_err(|error| sqlite_error("cannot prepare the history query", error))?;
     let rows = statement
-        .query_map(params![limit as i64], |row| {
+        .query_map(params![limit as i64, root], |row| {
             Ok(ScanSessionSummary {
                 id: row.get(0)?,
                 root_dir: row.get(1)?,
@@ -371,31 +393,25 @@ impl ScanHistoryRepository for SqliteScanHistoryRepository {
             // only owns plain data and never borrows the caller.
             let record = SessionRecord::from_session(session)?;
             let connection = Arc::clone(&self.connection);
-            let (sender, receiver) = sync_channel(1);
-            std::thread::spawn(move || {
-                let result = write_record(&connection, &record);
-                let _ = sender.send(result);
-            });
-            receiver.recv().map_err(|error| {
-                DomainError::External(format!("the history writer thread failed: {error}"))
-            })?
+            dispatch("the history writer thread failed", move || {
+                write_record(&connection, &record)
+            })
         })
     }
 
     fn get_history<'a>(
         &'a self,
         limit: usize,
+        root: Option<&'a str>,
     ) -> coderadar_usecases::BoxFuture<'a, Result<Vec<ScanSessionSummary>, DomainError>> {
+        // The workspace filter is owned by the worker thread: it outlives the
+        // borrow of the caller.
+        let root = root.map(|root| root.to_string());
         Box::pin(async move {
             let connection = Arc::clone(&self.connection);
-            let (sender, receiver) = sync_channel(1);
-            std::thread::spawn(move || {
-                let result = read_summaries(&connection, limit);
-                let _ = sender.send(result);
-            });
-            receiver.recv().map_err(|error| {
-                DomainError::External(format!("the history reader thread failed: {error}"))
-            })?
+            dispatch("the history reader thread failed", move || {
+                read_summaries(&connection, limit, root.as_deref())
+            })
         })
     }
 }
@@ -426,7 +442,7 @@ mod tests {
         crate::executor::block_on(repository.save_scan_session(&first)).expect("save");
         crate::executor::block_on(repository.save_scan_session(&second)).expect("save");
 
-        let history = crate::executor::block_on(repository.get_history(10)).expect("history");
+        let history = crate::executor::block_on(repository.get_history(10, None)).expect("history");
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].id, "b");
         assert_eq!(history[1].id, "a");
@@ -441,7 +457,7 @@ mod tests {
         let second = session("a", 2_000, 7, Vec::new());
         crate::executor::block_on(repository.save_scan_session(&first)).expect("save");
         crate::executor::block_on(repository.save_scan_session(&second)).expect("save");
-        let history = crate::executor::block_on(repository.get_history(10)).expect("history");
+        let history = crate::executor::block_on(repository.get_history(10, None)).expect("history");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].files_scanned, 7);
     }

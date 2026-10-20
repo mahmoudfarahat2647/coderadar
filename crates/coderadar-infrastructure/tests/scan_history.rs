@@ -3,60 +3,78 @@
 //! These tests exercise the SQLite repository through its public API only:
 //! the ports of Layer 2 are driven exactly as the Tauri layer will drive them.
 
+mod common;
+
 use std::path::Path;
 use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 
 use coderadar_domain::{Finding, ScanMode, ScanSession, Severity};
-use coderadar_infrastructure::{FindingSnapshot, SqliteScanHistoryRepository};
+use coderadar_infrastructure::{
+    FindingBatch, FindingSnapshot, MockRuleEvaluator, ScanReport, SqliteScanHistoryRepository,
+};
 use coderadar_usecases::ScanHistoryRepository;
 
-/// Block the current thread until `future` completes.
-///
-/// The infrastructure crate keeps its own executor internally; the integration
-/// tests need a tiny local copy because `block_on` is not part of the public
-/// API.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    struct ThreadWaker {
-        thread: std::thread::Thread,
-    }
+use common::{block_on, FailingHistory};
 
-    impl Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.thread.unpark();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.thread.unpark();
-        }
-    }
-
-    let waker = Waker::from(Arc::new(ThreadWaker {
-        thread: std::thread::current(),
-    }));
-    let mut context = Context::from_waker(&waker);
-    let mut future = Box::pin(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::park(),
-        }
-    }
-}
+/// The repository used by the end-to-end history tests.
+const FIXTURE_REPOSITORY: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/known-bad-repo");
 
 fn session(id: &str, finished: u64, files: usize, findings: Vec<Finding>) -> ScanSession {
-    let mut session = ScanSession::new(
-        id,
-        "/workspace",
-        ScanMode::FullScan,
-        finished.saturating_sub(10),
-    );
+    session_of(id, "/workspace", finished, files, findings)
+}
+
+/// A session of the given workspace.
+fn session_of(
+    id: &str,
+    root: &str,
+    finished: u64,
+    files: usize,
+    findings: Vec<Finding>,
+) -> ScanSession {
+    let mut session = ScanSession::new(id, root, ScanMode::FullScan, finished.saturating_sub(10));
     session.finished_at_unix_ms = Some(finished);
     session.files_scanned = files;
     for finding in findings {
         session.push(finding);
     }
     session
+}
+
+#[test]
+fn the_history_can_be_scoped_to_one_workspace() {
+    let repository = SqliteScanHistoryRepository::open_in_memory().expect("repository");
+
+    let first = session_of("alpha-1", "/workspace/alpha", 1_000, 4, Vec::new());
+    let second = session_of("beta-1", "/workspace/beta", 2_000, 8, Vec::new());
+    let third = session_of("alpha-2", "/workspace/alpha", 3_000, 6, Vec::new());
+    block_on(repository.save_scan_session(&first)).expect("save");
+    block_on(repository.save_scan_session(&second)).expect("save");
+    block_on(repository.save_scan_session(&third)).expect("save");
+
+    let alpha = block_on(repository.get_history(10, Some("/workspace/alpha"))).expect("history");
+    assert_eq!(
+        alpha.len(),
+        2,
+        "only the sessions of the workspace are returned"
+    );
+    assert_eq!(alpha[0].id, "alpha-2");
+    assert_eq!(alpha[1].id, "alpha-1");
+
+    let beta = block_on(repository.get_history(10, Some("/workspace/beta"))).expect("history");
+    assert_eq!(beta.len(), 1);
+    assert_eq!(beta[0].id, "beta-1");
+
+    let unknown = block_on(repository.get_history(10, Some("/workspace/gamma"))).expect("history");
+    assert!(unknown.is_empty(), "an unknown workspace has no history");
+
+    let everything = block_on(repository.get_history(10, None)).expect("history");
+    assert_eq!(
+        everything.len(),
+        3,
+        "without a filter every session is returned"
+    );
 }
 
 #[test]
@@ -82,7 +100,7 @@ fn two_sessions_are_read_back_newest_first() {
     block_on(repository.save_scan_session(&older)).expect("save");
     block_on(repository.save_scan_session(&newer)).expect("save");
 
-    let history = block_on(repository.get_history(10)).expect("history");
+    let history = block_on(repository.get_history(10, None)).expect("history");
     assert_eq!(history.len(), 2);
 
     assert_eq!(history[0].id, "newer");
@@ -111,7 +129,7 @@ fn the_history_is_limited_to_the_newest_sessions() {
         block_on(repository.save_scan_session(&session)).expect("save");
     }
 
-    let history = block_on(repository.get_history(1)).expect("history");
+    let history = block_on(repository.get_history(1, None)).expect("history");
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, "session-4");
     assert_eq!(history[0].finished_at_unix_ms, 1_004);
@@ -155,7 +173,7 @@ fn an_in_memory_repository_never_touches_the_filesystem() {
     let session = session("in-memory", 1_000, 2, Vec::new());
     block_on(repository.save_scan_session(&session)).expect("save");
 
-    let history = block_on(repository.get_history(10)).expect("history");
+    let history = block_on(repository.get_history(10, None)).expect("history");
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, "in-memory");
 }
@@ -175,7 +193,7 @@ fn a_file_backed_repository_persists_across_reopenings() {
     assert!(path.exists(), "the database file must have been created");
 
     let repository = SqliteScanHistoryRepository::open(&path).expect("open");
-    let history = block_on(repository.get_history(10)).expect("history");
+    let history = block_on(repository.get_history(10, None)).expect("history");
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, "persisted");
     assert_eq!(history[0].files_scanned, 5);
@@ -190,8 +208,84 @@ fn saving_the_same_session_twice_replaces_the_row() {
     block_on(repository.save_scan_session(&first)).expect("save");
     block_on(repository.save_scan_session(&second)).expect("save");
 
-    let history = block_on(repository.get_history(10)).expect("history");
+    let history = block_on(repository.get_history(10, None)).expect("history");
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].files_scanned, 9);
     assert_eq!(history[0].finished_at_unix_ms, 2_000);
+}
+
+#[test]
+fn a_failing_history_does_not_fail_the_scan() {
+    let history = FailingHistory;
+
+    let report: ScanReport = coderadar_infrastructure::scan_project_streaming_with_history(
+        Path::new(FIXTURE_REPOSITORY),
+        Arc::new(MockRuleEvaluator::new()),
+        Duration::from_millis(50),
+        |_batch: FindingBatch| {},
+        &history,
+    )
+    .expect("a broken history must never invalidate a finished scan");
+
+    assert!(
+        report.scan.files_scanned > 0,
+        "the scan itself must have completed"
+    );
+}
+
+#[test]
+fn a_completed_scan_is_persisted_with_its_compliance_score() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("history.sqlite3");
+    let repository = SqliteScanHistoryRepository::open(&path).expect("open");
+
+    let report: ScanReport = coderadar_infrastructure::scan_project_streaming_with_history(
+        Path::new(FIXTURE_REPOSITORY),
+        Arc::new(MockRuleEvaluator::new()),
+        Duration::from_millis(50),
+        |_batch: FindingBatch| {},
+        &repository,
+    )
+    .expect("the scan succeeds");
+
+    let history = block_on(repository.get_history(10, None)).expect("history");
+    assert_eq!(history.len(), 1, "exactly one session is persisted");
+
+    let session = &history[0];
+    assert_eq!(session.id, report.session.id, "the persisted session");
+    assert!(session.files_scanned > 0, "the files were counted");
+    assert_eq!(session.total_findings, report.findings.len());
+    assert!(
+        session.compliance_percent <= 100,
+        "the compliance score stays in 0..=100"
+    );
+    assert_eq!(session.root_dir, canonical_fixture_root());
+}
+
+#[test]
+fn the_findings_of_a_completed_scan_are_snapshotted() {
+    let repository = SqliteScanHistoryRepository::open_in_memory().expect("repository");
+
+    let report: ScanReport = coderadar_infrastructure::scan_project_streaming_with_history(
+        Path::new(FIXTURE_REPOSITORY),
+        Arc::new(MockRuleEvaluator::new()),
+        Duration::from_millis(50),
+        |_batch: FindingBatch| {},
+        &repository,
+    )
+    .expect("the scan succeeds");
+
+    let snapshots = repository
+        .load_snapshots(&report.session.id)
+        .expect("snapshots");
+    assert_eq!(snapshots.len(), report.findings.len());
+    assert!(!snapshots.is_empty(), "the fixture carries findings");
+}
+
+/// The root directory of the fixture, in the very shape the pipeline stores it.
+fn canonical_fixture_root() -> String {
+    std::fs::canonicalize(FIXTURE_REPOSITORY)
+        .expect("the fixture repository exists")
+        .to_string_lossy()
+        .replace('\\', "/")
 }

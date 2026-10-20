@@ -67,9 +67,14 @@ pub trait ScanHistoryRepository: Send + Sync {
     ) -> BoxFuture<'a, Result<(), DomainError>>;
 
     /// Load the most recent scan summaries, newest first.
+    ///
+    /// When `root` is given, only the sessions of that workspace are returned.
+    /// The workspace may be spelled in any way the caller knows it: the
+    /// implementation canonicalises it exactly like the stored session.
     fn get_history<'a>(
         &'a self,
         limit: usize,
+        root: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Vec<ScanSessionSummary>, DomainError>>;
 }
 

@@ -1,8 +1,8 @@
 //! Tauri IPC commands for CodeRadar Studio.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use coderadar_adapters::{
     unified_diff, HistoryPointDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
@@ -16,6 +16,68 @@ use coderadar_usecases::{PatchApplier, PreparePatch, ScanHistoryRepository, Sour
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
+/// How long the opener thread is given to install the history database.
+const HISTORY_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often the waiting thread polls for the opened database.
+const HISTORY_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+/// Handle on the scan-history database.
+///
+/// SQLite is a blocking driver: the database is opened on a dedicated
+/// thread, never on the UI thread (`CR-SPEC-13 §6`). The repository is
+/// installed in a [`OnceLock`] as soon as the opener thread is done; the
+/// readers wait for it — always on a worker thread, never on the UI thread.
+struct HistoryHandle {
+    ready: OnceLock<SqliteScanHistoryRepository>,
+}
+
+impl HistoryHandle {
+    /// A handle whose slot is still empty.
+    fn new() -> Self {
+        Self {
+            ready: OnceLock::new(),
+        }
+    }
+
+    /// Open the history database and install it in the slot.
+    ///
+    /// This is the body of the opener thread: it must never run on the UI
+    /// thread.
+    fn open(&self) {
+        let repository = SqliteScanHistoryRepository::default_path()
+            .and_then(SqliteScanHistoryRepository::open)
+            .unwrap_or_else(|error| {
+                eprintln!("[coderadar] the scan history is disabled: {error}");
+                SqliteScanHistoryRepository::open_in_memory()
+                    .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"))
+            });
+        let _ = self.ready.set(repository);
+    }
+
+    /// The history repository, waiting for the opener thread.
+    ///
+    /// When the opener thread does not deliver the database in time, an
+    /// in-memory database is installed as a fallback so the UI keeps working.
+    fn repository(&self) -> &SqliteScanHistoryRepository {
+        let deadline = Instant::now() + HISTORY_OPEN_TIMEOUT;
+        while self.ready.get().is_none() && Instant::now() < deadline {
+            std::thread::sleep(HISTORY_POLL_INTERVAL);
+        }
+        if let Some(repository) = self.ready.get() {
+            return repository;
+        }
+
+        // The opener thread is stuck: fall back to an in-memory database.
+        let fallback = SqliteScanHistoryRepository::open_in_memory()
+            .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"));
+        let _ = self.ready.set(fallback);
+        self.ready
+            .get()
+            .expect("the history repository is installed")
+    }
+}
+
 /// Process-wide engine state shared by every command.
 ///
 /// The [`SemanticEngine`] is swapped whenever the stored API key changes, so a
@@ -23,19 +85,18 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
     engine: RwLock<SemanticEngine>,
     credentials: KeyringCredentialStore,
-    history: SqliteScanHistoryRepository,
+    history: Arc<HistoryHandle>,
 }
 
 impl AppState {
     /// Resolve the engine from the OS keychain / environment at startup.
+    ///
+    /// The history database is **not** opened here: the opener thread does it
+    /// in the background so the UI thread is never blocked by SQLite.
     pub fn new() -> Self {
-        let history = SqliteScanHistoryRepository::default_path()
-            .and_then(SqliteScanHistoryRepository::open)
-            .unwrap_or_else(|error| {
-                eprintln!("[coderadar] the scan history is disabled: {error}");
-                SqliteScanHistoryRepository::open_in_memory()
-                    .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"))
-            });
+        let history = Arc::new(HistoryHandle::new());
+        let opener = Arc::clone(&history);
+        std::thread::spawn(move || opener.open());
 
         Self {
             engine: RwLock::new(SemanticEngine::from_environment()),
@@ -162,6 +223,9 @@ pub async fn start_scan(
 
     let app_handle = app.clone();
     let scan_result = tauri::async_runtime::spawn_blocking(move || {
+        // The repository is resolved inside the worker thread: waiting for
+        // the opener thread must never happen on the UI thread.
+        let repository = history.repository().clone();
         let app_for_batches = app_handle.clone();
         scan_project_streaming_with_history(
             &root_path,
@@ -170,7 +234,7 @@ pub async fn start_scan(
             move |batch: FindingBatch| {
                 let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
             },
-            &history,
+            &repository,
         )
     })
     .await
@@ -337,14 +401,26 @@ pub async fn apply_patch(
 }
 
 /// Load the compliance trend of the past scans, newest first.
+///
+/// When `root_path` is given, only the sessions of that workspace are
+/// returned, so the trend never mixes projects.
 #[tauri::command]
 pub async fn get_scan_history(
     state: tauri::State<'_, AppState>,
     limit: usize,
+    root_path: Option<String>,
 ) -> Result<Vec<HistoryPointDTO>, String> {
     let history = state.history.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let summaries = block_on(history.get_history(limit))
+        // The repository is resolved inside the worker thread: waiting for
+        // the opener thread must never happen on the UI thread.
+        let repository = history.repository().clone();
+        let root = root_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|root| !root.is_empty())
+            .map(str::to_string);
+        let summaries = block_on(repository.get_history(limit, root.as_deref()))
             .map_err(|error| format!("The scan history cannot be read: {error}"))?;
         Ok(summaries
             .iter()

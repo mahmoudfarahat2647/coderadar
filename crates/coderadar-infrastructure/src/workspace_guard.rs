@@ -26,6 +26,15 @@ use std::path::{Component, Path, PathBuf};
 
 use coderadar_domain::DomainError;
 
+/// The canonical, slash separated path of a workspace.
+///
+/// The same spelling is stored with a scan session and used to scope the scan
+/// history, so a stored session and a query always agree.
+pub fn canonical_root(root: &Path) -> String {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    canonical.to_string_lossy().replace('\\', "/")
+}
+
 /// A canonicalised workspace root that can resolve relative paths safely.
 #[derive(Debug, Clone)]
 pub struct WorkspaceGuard {
