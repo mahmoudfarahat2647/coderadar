@@ -12,14 +12,17 @@
 //!   a tampered payload is rejected before it can corrupt a file;
 //! * **atomic writes** — the new content lands in a temporary file in the
 //!   same directory and is then `rename`d over the target, so the file is
-//!   never observed half-written.
+//!   never observed half-written;
+//! * **exclusive creation** — the temporary file is created with
+//!   `create_new`, so a path planted by somebody else (a symlink, for
+//!   instance) is never opened and never followed.
 //!
 //! Every refusal is reported as a [`PatchOutcome`], never as an error: a
 //! refusal is a normal, expected outcome of the pipeline.
 
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use coderadar_domain::{DomainError, PatchOutcome, PatchProposal};
 use coderadar_usecases::PatchApplier;
@@ -27,8 +30,8 @@ use coderadar_usecases::PatchApplier;
 use crate::hashing::sha256_hex;
 use crate::workspace_guard::WorkspaceGuard;
 
-/// Counter making the temporary file name unique inside one process.
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Number of staging file names tried before the write is refused.
+const STAGING_ATTEMPTS: u32 = 100;
 
 /// Reason reported when the payload of a proposal does not match the file.
 const PAYLOAD_MISMATCH: &str = "the proposal payload does not match the current file content";
@@ -38,16 +41,61 @@ const PAYLOAD_MISMATCH: &str = "the proposal payload does not match the current 
 /// The temporary file lives in the **same directory** as the target so that the
 /// final `rename` is atomic (same filesystem) and so that the target's
 /// permissions can be inherited from the original file.
+///
+/// The name is derived from the target and from the process id; the `attempt`
+/// number distinguishes the candidates of a single write (see
+/// [`create_staging_file`]).
 fn staging_path(path: &Path) -> PathBuf {
+    staging_path_for(path, 0)
+}
+
+/// Build the path of the staging file of the `attempt`-th try.
+fn staging_path_for(path: &Path, attempt: u32) -> PathBuf {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
     let directory = parent.unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".to_string());
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
-    directory.join(format!(".{name}.coderadar-{pid}-{counter}.tmp"))
+    directory.join(format!(".{name}.coderadar-{pid}-{attempt}.tmp"))
+}
+
+/// Create the staging file that will hold the new content of `path`.
+///
+/// The file is created with `create_new`, so an **already existing** path — a
+/// file planted by somebody else, or a symlink pointing outside the
+/// workspace — is never opened and never followed. On a collision the next
+/// candidate name is tried; the write is refused only when every candidate is
+/// already taken.
+fn create_staging_file(path: &Path) -> Result<(PathBuf, File), DomainError> {
+    let mut staging = staging_path(path);
+    let mut attempt = 0;
+    loop {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)
+        {
+            Ok(file) => return Ok((staging, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempt += 1;
+                if attempt >= STAGING_ATTEMPTS {
+                    return Err(DomainError::Io(format!(
+                        "cannot create a staging file next to `{}`: the {STAGING_ATTEMPTS} candidate names are already taken",
+                        path.display()
+                    )));
+                }
+                staging = staging_path_for(path, attempt);
+            }
+            Err(error) => {
+                return Err(DomainError::Io(format!(
+                    "cannot create the staging file `{}`: {error}",
+                    staging.display()
+                )));
+            }
+        }
+    }
 }
 
 /// Write `content` to `path` atomically.
@@ -57,12 +105,16 @@ fn staging_path(path: &Path) -> PathBuf {
 /// and finally `rename`d over the target. A reader either sees the old
 /// content or the new one, never a partially written file.
 ///
+/// This helper is internal to the crate: every write to the workspace goes
+/// through [`SafePatchApplier`], which resolves the target with the
+/// `WorkspaceGuard` first.
+///
 /// # Errors
 /// Returns [`DomainError::Io`] when the staging file cannot be written or the
 /// final rename fails. The staging file is removed in that case.
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), DomainError> {
-    let staging = staging_path(path);
-    match write_and_rename(path, content, &staging) {
+pub(crate) fn atomic_write(path: &Path, content: &str) -> Result<(), DomainError> {
+    let (staging, file) = create_staging_file(path)?;
+    match write_and_rename(path, content, &staging, file) {
         Ok(()) => Ok(()),
         Err(error) => {
             let _ = std::fs::remove_file(&staging);
@@ -72,27 +124,33 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<(), DomainError> {
 }
 
 /// Write the staging file and rename it over the target.
-fn write_and_rename(path: &Path, content: &str, staging: &Path) -> Result<(), DomainError> {
-    {
-        let mut file = std::fs::File::create(staging).map_err(|error| {
-            DomainError::Io(format!(
-                "cannot create the staging file `{}`: {error}",
-                staging.display()
-            ))
-        })?;
-        file.write_all(content.as_bytes())
-            .map_err(|error| DomainError::Io(format!("cannot write the content: {error}")))?;
-        file.flush()
-            .map_err(|error| DomainError::Io(format!("cannot flush the content: {error}")))?;
-        file.sync_all().map_err(|error| {
-            DomainError::Io(format!("cannot sync the content to the disk: {error}"))
-        })?;
+fn write_and_rename(
+    path: &Path,
+    content: &str,
+    staging: &Path,
+    mut file: File,
+) -> Result<(), DomainError> {
+    file.write_all(content.as_bytes())
+        .map_err(|error| DomainError::Io(format!("cannot write the content: {error}")))?;
+    file.flush()
+        .map_err(|error| DomainError::Io(format!("cannot flush the content: {error}")))?;
+    file.sync_all().map_err(|error| {
+        DomainError::Io(format!("cannot sync the content to the disk: {error}"))
+    })?;
 
-        // The target keeps its permissions across the rewrite.
-        if let Ok(metadata) = std::fs::metadata(path) {
-            let _ = file.set_permissions(metadata.permissions());
-        }
+    // The target keeps its permissions across the rewrite.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        file.set_permissions(metadata.permissions())
+            .map_err(|error| {
+                DomainError::Io(format!(
+                    "cannot copy the file permissions onto the staging file: {error}"
+                ))
+            })?;
     }
+
+    // The staging file must be closed before it can be renamed over the
+    // target (Windows refuses to rename an open file).
+    drop(file);
 
     std::fs::rename(staging, path).map_err(|error| {
         DomainError::Io(format!(
@@ -361,5 +419,54 @@ mod tests {
         let error =
             atomic_write(&dir.path().join("missing").join("a.txt"), "x").expect_err("must fail");
         assert!(matches!(error, DomainError::Io(_)), "{error:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_is_never_followed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("a.txt");
+        std::fs::write(&target, "old").expect("write");
+
+        let outside_dir = tempfile::tempdir().expect("tempdir");
+        let outside = outside_dir.path().join("secret.txt");
+        std::fs::write(&outside, "top secret").expect("write");
+
+        // Somebody else plants a symlink where the staging file is going to
+        // be created: it must never be opened, hence never followed.
+        let planted = super::staging_path(&target);
+        std::os::unix::fs::symlink(&outside, &planted).expect("symlink");
+
+        atomic_write(&target, "new").expect("the write succeeds");
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("read"),
+            "top secret",
+            "the file outside must not be touched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read"),
+            "new",
+            "the target must carry the new content"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_permissions_of_the_target_are_copied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("a.txt");
+        std::fs::write(&target, "old").expect("write");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        atomic_write(&target, "new").expect("write");
+
+        let mode = std::fs::metadata(&target)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the mode must be preserved");
     }
 }

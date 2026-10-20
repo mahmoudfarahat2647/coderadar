@@ -58,7 +58,7 @@ pub use keychain::{
 };
 pub use layer_map::{LayerMap, LayerMapSource, ProjectLayer};
 pub use mock::MockRuleEvaluator;
-pub use patching::{atomic_write, SafePatchApplier};
+pub use patching::SafePatchApplier;
 pub use pipeline::{FindingBatchCallback, ScanOutcome, ScanPipeline};
 pub use redaction::{redact_chunk, redact_source, REDACTED_SECRET};
 pub use report::{

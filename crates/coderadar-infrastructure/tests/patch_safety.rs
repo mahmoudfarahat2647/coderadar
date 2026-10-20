@@ -5,41 +5,12 @@
 //! the workspace (`CR-SPEC-13 §4`).
 
 use std::path::Path;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
 
 use coderadar_domain::{LineEdit, PatchOutcome, PatchProposal};
 use coderadar_infrastructure::{sha256_hex, SafePatchApplier};
 use coderadar_usecases::PatchApplier;
 
-/// Block the current thread until `future` completes.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    struct ThreadWaker {
-        thread: std::thread::Thread,
-    }
-
-    impl Wake for ThreadWaker {
-        fn wake(self: Arc<Self>) {
-            self.thread.unpark();
-        }
-
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.thread.unpark();
-        }
-    }
-
-    let waker = Waker::from(Arc::new(ThreadWaker {
-        thread: std::thread::current(),
-    }));
-    let mut context = Context::from_waker(&waker);
-    let mut future = Box::pin(future);
-    loop {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => std::thread::park(),
-        }
-    }
-}
+mod common;
 
 /// Build a proposal replacing the whole content of `file_path`.
 fn proposal(file_path: &str, original: &str, new_content: &str) -> PatchProposal {
@@ -58,7 +29,8 @@ fn proposal(file_path: &str, original: &str, new_content: &str) -> PatchProposal
 fn apply(root: &Path, proposal: &PatchProposal) -> PatchOutcome {
     let root = root.to_str().expect("utf-8 path").to_string();
     let applier = SafePatchApplier::new();
-    block_on(applier.apply_patch(&root, proposal)).expect("the applier never fails with an error")
+    common::block_on(applier.apply_patch(&root, proposal))
+        .expect("the applier never fails with an error")
 }
 
 /// List the entries of `directory`.
@@ -303,4 +275,42 @@ fn a_missing_target_file_is_rejected_rather_than_created() {
         "unexpected outcome: {outcome:?}"
     );
     assert_eq!(entries(directory.path()), Vec::<String>::new());
+}
+
+#[test]
+fn a_tampered_payload_with_a_non_character_boundary_offset_is_rejected() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let target = directory.path().join("app.ts");
+    let original = "const greeting = \"ééé\";\n";
+    std::fs::write(&target, original).expect("write");
+
+    // The offset points inside a multibyte character: such a range could
+    // never be the honest result of the advertised edits, and applying it
+    // would split the character instead of replacing it.
+    let start = original.find('é').expect("the accented character is there");
+    let edits = vec![LineEdit::new(1, 1, start + 1, start + 2, "boom")];
+    let proposal = PatchProposal::new(
+        "app.ts",
+        "SEC-001",
+        sha256_hex(original),
+        1,
+        edits,
+        "boom",
+        "a tampered payload",
+    );
+
+    let outcome = apply(directory.path(), &proposal);
+    match &outcome {
+        PatchOutcome::Rejected { reason, .. } => {
+            assert!(!reason.is_empty(), "the rejection must be explained");
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read"),
+        original,
+        "the file must not be modified"
+    );
+    assert_eq!(entries(directory.path()), vec!["app.ts".to_string()]);
 }
