@@ -40,8 +40,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
   const polyline = useMemo(() => trendPolyline(projected), [projected]);
   const delta = useMemo(() => trendDelta(ordered), [ordered]);
   const { scale } = useMemo(
-    () => buildTrendScale(ordered, WIDTH, HEIGHT, PADDING),
-    [ordered]
+    () => buildTrendScale(WIDTH, HEIGHT, PADDING),
+    []
   );
 
   const areaPath = useMemo(() => {

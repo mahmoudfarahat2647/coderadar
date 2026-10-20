@@ -187,7 +187,7 @@ export const FindingDrawer: React.FC<FindingDrawerProps> = ({
         <button
           onClick={() => onProposeFix(finding)}
           className="w-full py-2 px-3 rounded-lg bg-secondary/15 border border-secondary/40 text-secondary hover:bg-secondary/25 transition-colors text-xs font-semibold flex items-center justify-center space-x-1.5"
-          title="Ask the remediation engine for a safe, reviewable patch"
+          title="Ask the remediation engine for a safe, reviewable patch (no deterministic fix may exist for this rule)"
         >
           <Wand2 className="w-3.5 h-3.5" />
           <span>Propose Fix</span>

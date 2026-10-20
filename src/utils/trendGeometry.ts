@@ -47,7 +47,6 @@ function round2(value: number): number {
  * `scale(0)` is the bottom of the plot area, `scale(100)` the top.
  */
 export function buildTrendScale(
-  points: ComplianceSample[],
   width: number,
   height: number,
   padding: TrendPadding
@@ -59,9 +58,6 @@ export function buildTrendScale(
     const clamped = Math.max(0, Math.min(100, value));
     return height - padding.bottom - (clamped / 100) * plotHeight;
   };
-
-  // `points` is accepted for symmetry with `trendPoints` and future extensions.
-  void points;
 
   return { scale, plotWidth, plotHeight };
 }
@@ -76,7 +72,7 @@ export function trendPoints(
   height: number,
   padding: TrendPadding
 ): TrendPoint[] {
-  const { scale, plotWidth } = buildTrendScale(points, width, height, padding);
+  const { scale, plotWidth } = buildTrendScale(width, height, padding);
   const count = points.length;
 
   return points.map((point, index) => {

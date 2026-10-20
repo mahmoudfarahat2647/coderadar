@@ -173,7 +173,12 @@ pub struct PatchPreviewDTO {
     /// Non-fatal warnings about the proposal.
     pub warnings: Vec<String>,
     /// The payload that is sent back when the user applies the patch.
-    pub proposal: PatchProposalDTO,
+    ///
+    /// `None` when no deterministic fix exists for the finding: the
+    /// remediation template did not match the code exactly, so no patch can be
+    /// proposed. The rest of the preview still describes the finding and the
+    /// reason why no remediation is available (`CR-SPEC-13 §5`).
+    pub proposal: Option<PatchProposalDTO>,
 }
 
 /// The result of a patch attempt.

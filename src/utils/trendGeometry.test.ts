@@ -21,7 +21,6 @@ const samples = (values: number[]) => values.map((v) => ({ compliance_percent: v
 // 1. Invariant: Y-Scale inversion (0% at the bottom, 100% at the top)
 {
   const { scale, plotWidth, plotHeight } = buildTrendScale(
-    samples([0, 50, 100]),
     WIDTH,
     HEIGHT,
     PADDING

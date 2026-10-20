@@ -169,6 +169,11 @@ export async function startScan(
 
 /**
  * Phase 6 — Request a safe remediation proposal for a single finding.
+ *
+ * The returned preview carries `proposal: null` when no deterministic fix
+ * exists for the rule (CR-SPEC-13 §5); the modal explains the situation
+ * instead of offering an apply action.
+ *
  * Read-only: returns `null` in the browser preview where the Rust engine is absent.
  */
 export async function previewPatch(
@@ -205,12 +210,21 @@ export async function applyPatch(
 /**
  * Phase 6 — Read the persisted SQLite scan history (newest first).
  * Read-only: degrades to an empty history in the browser preview.
+ *
+ * When `rootPath` is given, only the sessions of that workspace are returned,
+ * so the trend never mixes projects.
  */
-export async function getScanHistory(limit = 20): Promise<HistoryPointDTO[]> {
+export async function getScanHistory(
+  limit = 20,
+  rootPath?: string
+): Promise<HistoryPointDTO[]> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<HistoryPointDTO[]>("get_scan_history", { limit });
+      return await invoke<HistoryPointDTO[]>("get_scan_history", {
+        limit,
+        rootPath: rootPath?.trim() || null,
+      });
     } catch (e) {
       console.warn("Failed to read scan history from Tauri:", e);
     }

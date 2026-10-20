@@ -102,7 +102,7 @@ export type FilterCategory =
   | "pull_requests";
 
 /**
- * Phase 6 — Safe Atomic Patching (CR-SPEC-06).
+ * Phase 6 — Safe Atomic Patching (CR-SPEC-13).
  * A proposal carries the fingerprint of the original file so the backend can
  * refuse to write against a file that changed since the preview was produced.
  */
@@ -143,7 +143,12 @@ export interface PatchPreviewDTO {
   added_lines: number;
   removed_lines: number;
   warnings: string[];
-  proposal: PatchProposalDTO;
+  /**
+   * The patch payload, or `null` when no deterministic fix exists for the
+   * finding: the remediation template did not match the code exactly
+   * (CR-SPEC-13 §5). LLM-generated fixes remain a later phase.
+   */
+  proposal: PatchProposalDTO | null;
 }
 
 export interface PatchOutcomeDTO {

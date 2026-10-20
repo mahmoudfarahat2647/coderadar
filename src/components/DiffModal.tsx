@@ -83,18 +83,24 @@ export const DiffModal: React.FC<DiffModalProps> = ({
 
   if (!open || !preview) return null;
 
+  // A missing proposal means the rule has no deterministic fix: the modal
+  // explains why instead of offering an apply action (CR-SPEC-13 §5).
+  const proposal = preview.proposal;
+  const hasProposal = proposal !== null;
+
   const handleCopy = () => {
+    if (!hasProposal) return;
     navigator.clipboard.writeText(preview.unified_diff);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleApply = async () => {
-    if (busy) return;
+    if (busy || !proposal) return;
     setBusy(true);
     setOutcome(null);
     try {
-      const result = await applyPatch(rootPath, preview.proposal);
+      const result = await applyPatch(rootPath, proposal);
       if (!result) {
         onError(
           "Patching is only available in the CodeRadar desktop app (Tauri runtime)."
@@ -178,6 +184,22 @@ export const DiffModal: React.FC<DiffModalProps> = ({
             </div>
           )}
 
+          {/* No deterministic fix available for this rule */}
+          {!hasProposal && (
+            <div className="p-3 rounded-lg bg-status-medium/10 border border-status-medium/30 text-[11px] text-text-secondary">
+              <div className="flex items-center space-x-1.5 font-semibold text-status-medium mb-1">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>No Deterministic Fix Exists For This Rule</span>
+              </div>
+              <p className="leading-relaxed">
+                The remediation template does not match this code exactly, so no
+                safe patch can be proposed and nothing can be applied
+                automatically. LLM-generated fixes are scheduled for a later
+                phase.
+              </p>
+            </div>
+          )}
+
           {/* Warnings */}
           {preview.warnings.length > 0 && (
             <div className="p-3 rounded-lg bg-status-medium/10 border border-status-medium/30 text-[11px] text-text-secondary">
@@ -211,7 +233,9 @@ export const DiffModal: React.FC<DiffModalProps> = ({
           <div className="rounded-lg bg-surface-canvas border border-border-subtle overflow-auto max-h-80">
             {diffLines.length === 0 ? (
               <div className="p-3 font-mono text-[11px] text-text-muted">
-                No textual diff available for this proposal.
+                {hasProposal
+                  ? "No textual diff available for this proposal."
+                  : "No diff available: no deterministic fix exists for this rule."}
               </div>
             ) : (
               <div className="min-w-max py-1 font-mono text-[11px] leading-relaxed">
@@ -235,8 +259,8 @@ export const DiffModal: React.FC<DiffModalProps> = ({
         <div className="p-3 border-t border-border-subtle bg-surface-canvas flex items-center justify-end gap-2">
           <button
             onClick={handleCopy}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-md bg-surface-elevated border border-border-subtle text-text-primary hover:bg-surface-overlay transition-colors disabled:opacity-50 flex items-center space-x-1.5 text-xs"
+            disabled={busy || !hasProposal}
+            className="px-3 py-1.5 rounded-md bg-surface-elevated border border-border-subtle text-text-primary hover:bg-surface-overlay transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1.5 text-xs"
           >
             {copied ? (
               <>
@@ -253,8 +277,8 @@ export const DiffModal: React.FC<DiffModalProps> = ({
 
           <button
             onClick={handleApply}
-            disabled={busy}
-            className="px-3 py-1.5 rounded-md bg-primary hover:bg-[#239f63] text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-glow disabled:opacity-50"
+            disabled={busy || !hasProposal}
+            className="px-3 py-1.5 rounded-md bg-primary hover:bg-[#239f63] text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-glow disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? (
               <>

@@ -346,6 +346,9 @@ pub async fn preview_patch(
 }
 
 /// Prepare the proposal and render its unified diff.
+///
+/// A finding without a deterministic fix is not an error: the preview carries
+/// no proposal and the modal explains why (`CR-SPEC-13 §5`).
 fn build_preview(
     root_path: String,
     file_path: String,
@@ -355,9 +358,31 @@ fn build_preview(
     let source = block_on(reader.read_source(&root_path, &file_path))
         .map_err(|error| format!("Cannot read `{file_path}`: {error}"))?;
 
+    if coderadar_usecases::template_for(&rule_id).is_none() {
+        return Ok(no_proposal_preview(
+            &source,
+            &file_path,
+            &rule_id,
+            format!("No deterministic fix template exists for rule `{rule_id}`."),
+            Vec::new(),
+        ));
+    }
+
     let prepare = PreparePatch::new(reader);
-    let proposal = block_on(prepare.prepare_from_source(&source, &file_path, &rule_id))
-        .map_err(|error| format!("No deterministic fix is available: {error}"))?;
+    let proposal = match block_on(prepare.prepare_from_source(&source, &file_path, &rule_id)) {
+        Ok(proposal) => proposal,
+        Err(error) => {
+            return Ok(no_proposal_preview(
+                &source,
+                &file_path,
+                &rule_id,
+                format!(
+                "The deterministic template for rule `{rule_id}` does not match this file exactly."
+            ),
+                vec![error.to_string()],
+            ))
+        }
+    };
 
     let diff = unified_diff(&source.content, &proposal.new_content, &file_path);
     let title = coderadar_usecases::template_for(&rule_id)
@@ -376,8 +401,36 @@ fn build_preview(
         added_lines: diff.added_lines,
         removed_lines: diff.removed_lines,
         warnings: Vec::new(),
-        proposal: PatchProposalDTO::from_proposal(&proposal, diff.text),
+        proposal: Some(PatchProposalDTO::from_proposal(&proposal, diff.text)),
     })
+}
+
+/// Build the preview of a finding that has no deterministic fix.
+///
+/// The preview is still rendered - with the fingerprint of the untouched file
+/// and without a proposal - so the modal can explain that no deterministic
+/// fix exists for this finding (`CR-SPEC-13 §5`).
+fn no_proposal_preview(
+    source: &coderadar_usecases::SourceFile,
+    file_path: &str,
+    rule_id: &str,
+    explanation: String,
+    warnings: Vec<String>,
+) -> PatchPreviewDTO {
+    PatchPreviewDTO {
+        file_path: file_path.to_string(),
+        rule_id: rule_id.to_string(),
+        title: "No deterministic fix available".to_string(),
+        explanation,
+        original_sha256: source.sha256.clone(),
+        new_sha256: source.sha256.clone(),
+        original_line_count: source.line_count,
+        unified_diff: String::new(),
+        added_lines: 0,
+        removed_lines: 0,
+        warnings,
+        proposal: None,
+    }
 }
 
 /// Apply a reviewed patch to the workspace.

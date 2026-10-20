@@ -66,6 +66,18 @@ export const App: React.FC = () => {
   // the badge the moment Jev drops instead of only at scan end.
   const isScanningRef = useRef(false);
   isScanningRef.current = isScanning;
+
+  // The workspace of the last scan, readable from the async history callbacks
+  // (they are registered once, so they would otherwise close over a stale
+  // empty path).
+  const scannedPathRef = useRef<string>("");
+  scannedPathRef.current = scannedPath;
+
+  // The workspace currently in view, readable from the async history
+  // callbacks as well.
+  const targetPathRef = useRef<string>("");
+  targetPathRef.current = targetPath;
+
   useEffect(() => {
     const interval = setInterval(() => {
       if (isScanningRef.current) refreshEngineStatus();
@@ -80,10 +92,6 @@ export const App: React.FC = () => {
     });
     getEngineStatus().then((s) => {
       if (s) setEngineStatus(s);
-    });
-    // Load the persisted scan history so the Trend tab is populated on start.
-    getScanHistory(20).then((points) => {
-      setHistoryPoints(points);
     });
 
     // Listen to streaming scan events from the Rust 100 ms throttler
@@ -107,9 +115,11 @@ export const App: React.FC = () => {
         // Refresh the engine badge: a scan may have triggered a Mock fallback.
         refreshEngineStatus();
         // The finished scan is now persisted in the SQLite history.
-        getScanHistory(20).then((points) => {
-          setHistoryPoints(points);
-        });
+        getScanHistory(20, scannedPathRef.current || targetPathRef.current).then(
+          (points) => {
+            setHistoryPoints(points);
+          }
+        );
         if (report.findings && report.findings.length > 0) {
           setFindings((prev) => {
             const map = new Map<string, FindingDTO>();
@@ -131,6 +141,14 @@ export const App: React.FC = () => {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // The trend follows the workspace in view: the history is queried per
+  // workspace, so switching projects reloads the points of that project.
+  useEffect(() => {
+    getScanHistory(20, targetPath.trim()).then((points) => {
+      setHistoryPoints(points);
+    });
+  }, [targetPath]);
 
   // Handle Tab Switch
   const handleTabChange = (tab: string) => {
@@ -186,7 +204,7 @@ export const App: React.FC = () => {
   const handleProposeFix = async (finding: FindingDTO) => {
     setErrorMessage(null);
     // Patch the workspace that produced the finding, never a path typed later.
-    const root = scannedPath || targetPath.trim();
+    const root = scannedPath;
     if (!root) {
       setErrorMessage("Run a scan before proposing a remediation.");
       return;
@@ -561,7 +579,7 @@ export const App: React.FC = () => {
       <DiffModal
         open={diffPreview !== null}
         preview={diffPreview}
-        rootPath={scannedPath || targetPath.trim()}
+        rootPath={scannedPath}
         onClose={() => setDiffPreview(null)}
         onApplied={(outcome) => {
           setInfoBanner(outcome.message);
