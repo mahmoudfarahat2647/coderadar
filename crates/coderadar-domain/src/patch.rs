@@ -20,8 +20,12 @@ pub struct LineEdit {
     /// Last affected line, 1-based and inclusive.
     pub end_line: u32,
     /// Byte offset (inclusive) of the replaced range in the original content.
+    ///
+    /// The offset must fall on a UTF-8 character boundary of the content.
     pub start_offset: usize,
     /// Byte offset (exclusive) of the replaced range in the original content.
+    ///
+    /// The offset must fall on a UTF-8 character boundary of the content.
     pub end_offset: usize,
     /// The replacement text.
     pub replacement: String,
@@ -109,9 +113,14 @@ impl PatchProposal {
     /// to prove that the payload it received really is the result of the
     /// advertised edits, applied to the file that is on disk right now.
     ///
+    /// The byte range of every edit must fall on a UTF-8 character boundary
+    /// of `content`; a range that splits a multibyte character is refused
+    /// instead of panicking.
+    ///
     /// # Errors
     /// Returns [`DomainError::Invariant`] when an edit addresses an invalid
-    /// line range or a range outside `content`.
+    /// line range, a range outside `content`, or a range that is not on a
+    /// character boundary.
     pub fn apply_edits(&self, content: &str) -> Result<String, DomainError> {
         apply_edits(content, &self.edits)
     }
@@ -123,9 +132,14 @@ impl PatchProposal {
 /// from the end of the file towards its beginning, so an earlier edit never
 /// invalidates the offsets of a later one. Overlapping ranges are rejected.
 ///
+/// The byte range of every edit must fall on a UTF-8 character boundary of
+/// `content`: a range that starts or ends inside a multibyte character is
+/// refused with [`DomainError::Invariant`] instead of splitting the
+/// character (which would panic in `String::replace_range`).
+///
 /// # Errors
 /// Returns [`DomainError::Invariant`] when a range is invalid, out of bounds,
-/// or overlaps another range.
+/// not on a character boundary, or overlaps another range.
 pub fn apply_edits(content: &str, edits: &[LineEdit]) -> Result<String, DomainError> {
     let mut ordered: Vec<&LineEdit> = edits.iter().collect();
     ordered.sort_by_key(|edit| std::cmp::Reverse(edit.start_offset));
@@ -144,6 +158,14 @@ pub fn apply_edits(content: &str, edits: &[LineEdit]) -> Result<String, DomainEr
                 edit.start_offset,
                 edit.end_offset,
                 content.len()
+            )));
+        }
+        if !content.is_char_boundary(edit.start_offset)
+            || !content.is_char_boundary(edit.end_offset)
+        {
+            return Err(DomainError::invariant(format!(
+                "edit range {}..={} is not on a character boundary",
+                edit.start_offset, edit.end_offset
             )));
         }
         if edit.end_offset > previous_start {

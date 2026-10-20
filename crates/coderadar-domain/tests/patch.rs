@@ -1,7 +1,8 @@
 //! Domain tests for the patch model and the compliance score.
 
 use coderadar_domain::{
-    apply_edits, Finding, LineEdit, PatchOutcome, PatchProposal, ScanMode, ScanSession, Severity,
+    apply_edits, DomainError, Finding, LineEdit, PatchOutcome, PatchProposal, ScanMode,
+    ScanSession, Severity,
 };
 
 #[test]
@@ -45,6 +46,38 @@ fn an_edit_outside_the_content_is_rejected() {
     let content = "aaa\n";
     let edits = vec![LineEdit::new(1, 1, 0, 99, "x")];
     assert!(apply_edits(content, &edits).is_err());
+}
+
+#[test]
+fn an_edit_covering_a_multibyte_character_applies() {
+    let content = "let greeting = \"ééé\";\n";
+    let start = content.find('é').expect("the accented character is there");
+    let end = content.rfind('é').expect("the accented character is there") + 'é'.len_utf8();
+    let edits = vec![LineEdit::new(1, 1, start, end, "üüü")];
+    let patched = apply_edits(content, &edits).expect("the edit applies");
+    assert_eq!(patched, "let greeting = \"üüü\";\n");
+}
+
+#[test]
+fn an_edit_starting_inside_a_multibyte_character_is_rejected() {
+    let content = "let greeting = \"ééé\";\n";
+    let start = content.find('é').expect("the accented character is there");
+    // One byte inside the two-byte `é`: not a character boundary.
+    let edits = vec![LineEdit::new(1, 1, start + 1, start + 2, "x")];
+    let error = apply_edits(content, &edits).expect_err("a split character is refused");
+    assert!(matches!(error, DomainError::Invariant(_)), "{error:?}");
+    assert!(error.to_string().contains("character boundary"), "{error}");
+}
+
+#[test]
+fn an_edit_ending_inside_an_emoji_is_rejected() {
+    let content = "const emoji = \"😀\";\n";
+    let start = content.find('😀').expect("the emoji is there");
+    // Inside the four-byte emoji: not a character boundary.
+    let edits = vec![LineEdit::new(1, 1, start, start + 2, "x")];
+    let error = apply_edits(content, &edits).expect_err("a split emoji is refused");
+    assert!(matches!(error, DomainError::Invariant(_)), "{error:?}");
+    assert!(error.to_string().contains("character boundary"), "{error}");
 }
 
 #[test]
