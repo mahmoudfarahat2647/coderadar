@@ -128,7 +128,7 @@ impl PatchProposal {
 /// or overlaps another range.
 pub fn apply_edits(content: &str, edits: &[LineEdit]) -> Result<String, DomainError> {
     let mut ordered: Vec<&LineEdit> = edits.iter().collect();
-    ordered.sort_by(|a, b| b.start_offset.cmp(&a.start_offset));
+    ordered.sort_by_key(|edit| std::cmp::Reverse(edit.start_offset));
 
     let mut previous_start = usize::MAX;
     for edit in &ordered {

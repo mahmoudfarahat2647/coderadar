@@ -82,3 +82,21 @@ jobs:
       - name: cargo check on the declared MSRV
         run: cargo check --workspace --all-targets
 
+  frontend:
+    name: Frontend build & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check & build
+        run: npm run build
+      - name: Radar geometry tests
+        run: npm run test:geometry
+      - name: Trend geometry tests
+        run: npm run test:trend
+

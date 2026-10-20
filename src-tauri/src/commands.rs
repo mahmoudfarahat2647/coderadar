@@ -1,14 +1,19 @@
 //! Tauri IPC commands for CodeRadar Studio.
 
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use coderadar_infrastructure::{
-    is_semantic_rule, mask_api_key, scan_project_streaming_with, CredentialStore,
-    EngineStatusSnapshot, FindingBatch, JevConfig, KeyringCredentialStore, RuleManifest,
-    ScanReport, SemanticEngine, TIER0_OWNED_IDS,
+use coderadar_adapters::{
+    unified_diff, HistoryPointDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
 };
+use coderadar_infrastructure::{
+    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history,
+    CredentialStore, EngineStatusSnapshot, FindingBatch, JevConfig, KeyringCredentialStore,
+    RuleManifest, SafePatchApplier, ScanReport, SemanticEngine, SqliteScanHistoryRepository,
+    TIER0_OWNED_IDS,
+};
+use coderadar_usecases::{PatchApplier, PreparePatch, ScanHistoryRepository, SourceFileReader};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -19,14 +24,24 @@ use tauri::{Emitter, Manager};
 pub struct AppState {
     engine: RwLock<SemanticEngine>,
     credentials: KeyringCredentialStore,
+    history: SqliteScanHistoryRepository,
 }
 
 impl AppState {
     /// Resolve the engine from the OS keychain / environment at startup.
     pub fn new() -> Self {
+        let history = SqliteScanHistoryRepository::default_path()
+            .and_then(|path| SqliteScanHistoryRepository::open(path))
+            .unwrap_or_else(|error| {
+                eprintln!("[coderadar] the scan history is disabled: {error}");
+                SqliteScanHistoryRepository::open_in_memory()
+                    .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"))
+            });
+
         Self {
             engine: RwLock::new(SemanticEngine::from_environment()),
             credentials: KeyringCredentialStore::new(),
+            history,
         }
     }
 }
@@ -144,16 +159,22 @@ pub async fn start_scan(
         .map_err(|_| "Engine state lock poisoned".to_string())?
         .evaluator();
 
+    let history = app
+        .state::<AppState>()
+        .history
+        .clone();
+
     let app_handle = app.clone();
     let scan_result = tauri::async_runtime::spawn_blocking(move || {
         let app_for_batches = app_handle.clone();
-        scan_project_streaming_with(
+        scan_project_streaming_with_history(
             &root_path,
             evaluator,
             Duration::from_millis(100),
             move |batch: FindingBatch| {
                 let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
             },
+            &history,
         )
     })
     .await
@@ -248,4 +269,93 @@ pub fn get_default_scan_path() -> String {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| ".".into())
+}
+
+/// Build the unified diff of a deterministic fix without touching the file.
+///
+/// The proposal is built from the current content of the file, so the preview
+/// and the fingerprint it carries always describe the same bytes.
+#[tauri::command]
+pub async fn preview_patch(
+    root_path: String,
+    file_path: String,
+    rule_id: String,
+) -> Result<PatchPreviewDTO, String> {
+    tauri::async_runtime::spawn_blocking(move || build_preview(root_path, file_path, rule_id))
+        .await
+        .map_err(|error| format!("Patch preview task join error: {error}"))?
+}
+
+/// Prepare the proposal and render its unified diff.
+fn build_preview(
+    root_path: String,
+    file_path: String,
+    rule_id: String,
+) -> Result<PatchPreviewDTO, String> {
+    let reader = Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
+    let source = block_on(reader.read_source(&root_path, &file_path))
+        .map_err(|error| format!("Cannot read `{file_path}`: {error}"))?;
+
+    let prepare = PreparePatch::new(reader);
+    let proposal = block_on(prepare.prepare_from_source(&source, &file_path, &rule_id))
+        .map_err(|error| format!("No deterministic fix is available: {error}"))?;
+
+    let diff = unified_diff(&source.content, &proposal.new_content, &file_path);
+    let title = coderadar_usecases::template_for(&rule_id)
+        .map(|template| template.title.to_string())
+        .unwrap_or_else(|| format!("Deterministic fix for {rule_id}"));
+
+    Ok(PatchPreviewDTO {
+        file_path: proposal.file_path.clone(),
+        rule_id: proposal.rule_id.clone(),
+        title,
+        explanation: proposal.explanation.clone(),
+        original_sha256: proposal.original_sha256.clone(),
+        new_sha256: coderadar_infrastructure::sha256_hex(&proposal.new_content),
+        original_line_count: proposal.original_line_count,
+        unified_diff: diff.text.clone(),
+        added_lines: diff.added_lines,
+        removed_lines: diff.removed_lines,
+        warnings: Vec::new(),
+        proposal: PatchProposalDTO::from_proposal(&proposal, diff.text),
+    })
+}
+
+/// Apply a reviewed patch to the workspace.
+///
+/// The applier refuses the patch when the file changed since the preview (the
+/// SHA-256 fingerprint does not match) and always writes atomically.
+#[tauri::command]
+pub async fn apply_patch(
+    root_path: String,
+    proposal: PatchProposalDTO,
+) -> Result<PatchOutcomeDTO, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let applier = SafePatchApplier::new();
+        let domain_proposal = proposal.to_proposal();
+        let outcome = block_on(applier.apply_patch(&root_path, &domain_proposal))
+            .map_err(|error| format!("The patch could not be applied: {error}"))?;
+        Ok(PatchOutcomeDTO::from_outcome(&outcome))
+    })
+    .await
+    .map_err(|error| format!("Patch task join error: {error}"))?
+}
+
+/// Load the compliance trend of the past scans, newest first.
+#[tauri::command]
+pub async fn get_scan_history(
+    state: tauri::State<'_, AppState>,
+    limit: usize,
+) -> Result<Vec<HistoryPointDTO>, String> {
+    let history = state.history.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let summaries = block_on(history.get_history(limit))
+            .map_err(|error| format!("The scan history cannot be read: {error}"))?;
+        Ok(summaries
+            .iter()
+            .map(HistoryPointDTO::from_summary)
+            .collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|error| format!("History task join error: {error}"))?
 }

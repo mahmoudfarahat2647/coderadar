@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use coderadar_domain::{apply_edits, DomainError, LineEdit, PatchProposal};
 
-use crate::ports::SourceFileReader;
+use crate::ports::{SourceFile, SourceFileReader};
 
 /// A deterministic, review-before-apply remediation for one rule.
 pub struct FixTemplate {
@@ -46,8 +46,7 @@ const SQL_TEMPLATE: FixTemplate = FixTemplate {
 const SECRET_TEMPLATE: FixTemplate = FixTemplate {
     rule_id: "SEC-TOK-002",
     title: "Move the credential into an environment variable",
-    explanation:
-        "Hardcoded credentials leak with the source code. The literal is replaced by an \
+    explanation: "Hardcoded credentials leak with the source code. The literal is replaced by an \
          environment variable reference.",
     apply: fix_hardcoded_secret,
 };
@@ -61,12 +60,8 @@ const TLS_TEMPLATE: FixTemplate = FixTemplate {
 };
 
 /// Every deterministic template shipped with the studio.
-pub const ALL_TEMPLATES: &[FixTemplate] = &[
-    JWT_TEMPLATE,
-    SQL_TEMPLATE,
-    SECRET_TEMPLATE,
-    TLS_TEMPLATE,
-];
+pub const ALL_TEMPLATES: &[FixTemplate] =
+    &[JWT_TEMPLATE, SQL_TEMPLATE, SECRET_TEMPLATE, TLS_TEMPLATE];
 
 /// Look up the template of a rule.
 pub fn template_for(rule_id: &str) -> Option<&'static FixTemplate> {
@@ -110,13 +105,31 @@ impl PreparePatch {
         relative_path: &str,
         rule_id: &str,
     ) -> Result<PatchProposal, DomainError> {
+        let source = self.reader.read_source(root, relative_path).await?;
+        self.prepare_from_source(&source, relative_path, rule_id)
+            .await
+    }
+
+    /// Build the proposal from an already read [`SourceFile`].
+    ///
+    /// Reading the file once and reusing it keeps the diff and the fingerprint
+    /// consistent with each other.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::Invariant`] when the rule has no deterministic
+    /// template or when the template does not match the file.
+    pub async fn prepare_from_source(
+        &self,
+        source: &SourceFile,
+        relative_path: &str,
+        rule_id: &str,
+    ) -> Result<PatchProposal, DomainError> {
         let template = template_for(rule_id).ok_or_else(|| {
             DomainError::invariant(format!(
                 "no deterministic fix template for rule '{rule_id}'"
             ))
         })?;
 
-        let source = self.reader.read_source(root, relative_path).await?;
         let edits = (template.apply)(&source.content).ok_or_else(|| {
             DomainError::invariant(format!(
                 "no deterministic fix matched '{rule_id}' in '{relative_path}'"
@@ -127,7 +140,7 @@ impl PreparePatch {
         Ok(PatchProposal::new(
             relative_path,
             rule_id,
-            source.sha256,
+            source.sha256.clone(),
             source.line_count,
             edits,
             new_content,
@@ -387,7 +400,9 @@ fn fix_hardcoded_secret(content: &str) -> Option<Vec<LineEdit>> {
 
 fn is_secret_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    SECRET_NAME_MARKERS.iter().any(|marker| upper.contains(marker))
+    SECRET_NAME_MARKERS
+        .iter()
+        .any(|marker| upper.contains(marker))
 }
 
 fn is_credential_literal(value: &str) -> bool {

@@ -7,8 +7,12 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod diff;
 mod dto;
 mod radar;
 
-pub use dto::FindingDTO;
+pub use diff::{unified_diff, UnifiedDiff};
+pub use dto::{
+    FindingDTO, HistoryPointDTO, LineEditDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
+};
 pub use radar::{compute_angle_jitter, PolarCoordinate, RadarPresenter, MAX_ANGLE_JITTER_DEG};

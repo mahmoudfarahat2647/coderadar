@@ -92,15 +92,15 @@
 
 **Gate:** same app, same UI, real findings; unplugging the network falls back to Mock with the badge shown. ✅ PASS — unchanged `SemanticRuleEvaluator` port; redaction before egress; `FallbackRuleEvaluator` + shared `EngineStatus` flip the status-bar badge to *Mock Mode (fallback)* on Jev failure (status polled live during scans); hermetic adapter tests + MSRV 1.82 gate green *(CR-SPEC-12)*.
 
-## Phase 6 — Diff modal, safe patching, history
+## Phase 6 — Diff modal, safe patching, history ✅ (see `coderadar-specs/13-PHASE-6-DIFF-MODAL-SAFE-PATCHING-HISTORY.md`)
 **Goal:** act on findings safely and track progress.
 
-- [ ] Diff modal (unified view), copy patch
-- [ ] Apply patch: SHA-256 check, temp file + atomic rename, workspace-root and symlink guard
-- [ ] Start with **manual/templated fixes** for a few rules (e.g. `jwt.decode` → `jwt.verify`); LLM fixes come in Phase 8
-- [ ] SQLite (`sqlx`) scan history + trend chart on the dashboard
+- [x] Diff modal (unified view), copy patch — `src/components/DiffModal.tsx` + unified-diff presenter (`crates/coderadar-adapters/src/diff.rs`)
+- [x] Apply patch: SHA-256 check, temp file + atomic rename, workspace-root and symlink guard — `crates/coderadar-infrastructure/src/{hashing,patching,workspace_guard}.rs`
+- [x] Start with **manual/templated fixes** for a few rules (e.g. `jwt.decode` → `jwt.verify`); LLM fixes come in Phase 8 — `crates/coderadar-usecases/src/fixes.rs` (`SEC-JWT-003`, `SEC-INJ-001`, `SEC-TOK-002`, `SEC-TLS-005`)
+- [x] SQLite (`rusqlite`) scan history + trend chart on the dashboard — `crates/coderadar-infrastructure/src/history.rs` + `src/components/TrendChart.tsx`
 
-**Gate:** tests prove a changed file is never overwritten; history shows two scans with a trend.
+**Gate:** tests prove a changed file is never overwritten; history shows two scans with a trend. ✅ PASS — 8 patch-safety cases (`tests/patch_safety.rs`: apply, stale hash → conflict, traversal, absolute path, symlink escape, tampered payload, out-of-range, missing file), 4 end-to-end cases (`tests/patch_flow.rs`), 6 history cases (`tests/scan_history.rs`: ordering, limit, snapshot round-trip, in-memory, persistence, upsert) and 5 trend-geometry assertions (`src/utils/trendGeometry.test.ts`); clippy `-D warnings`, `cargo fmt --check`, the architecture guard and the MSRV 1.82 gate are green *(CR-SPEC-13 §9)*.
 
 ## Phase 7 — Hardening and release v1.0
 **Goal:** something others can install.

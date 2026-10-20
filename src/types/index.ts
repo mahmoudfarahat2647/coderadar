@@ -100,3 +100,74 @@ export type FilterCategory =
   | "edge_cases"
   | "performance"
   | "pull_requests";
+
+/**
+ * Phase 6 — Safe Atomic Patching (CR-SPEC-06).
+ * A proposal carries the fingerprint of the original file so the backend can
+ * refuse to write against a file that changed since the preview was produced.
+ */
+export type PatchStatus = "applied" | "conflict" | "rejected";
+
+/**
+ * One line edit of a patch. The backend re-applies the edits to the file on
+ * disk and refuses the patch when the result does not match `new_content`.
+ */
+export interface LineEditDTO {
+  start_line: number;
+  end_line: number;
+  start_offset: number;
+  end_offset: number;
+  replacement: string;
+}
+
+export interface PatchProposalDTO {
+  file_path: string;
+  rule_id: string;
+  original_sha256: string;
+  original_line_count: number;
+  edits: LineEditDTO[];
+  new_content: string;
+  unified_diff: string;
+  explanation: string;
+}
+
+export interface PatchPreviewDTO {
+  file_path: string;
+  rule_id: string;
+  title: string;
+  explanation: string;
+  original_sha256: string;
+  new_sha256: string;
+  original_line_count: number;
+  unified_diff: string;
+  added_lines: number;
+  removed_lines: number;
+  warnings: string[];
+  proposal: PatchProposalDTO;
+}
+
+export interface PatchOutcomeDTO {
+  status: PatchStatus;
+  file_path: string;
+  message: string;
+  original_sha256: string;
+  new_sha256?: string | null;
+}
+
+/**
+ * Phase 6 — SQLite scan history. The backend returns points newest-first;
+ * consumers are responsible for re-ordering them chronologically.
+ */
+export interface HistoryPointDTO {
+  id: string;
+  root_dir: string;
+  mode: string;
+  finished_at_unix_ms: number;
+  files_scanned: number;
+  total_findings: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  compliance_percent: number;
+}

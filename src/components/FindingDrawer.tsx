@@ -1,17 +1,19 @@
 import React, { useState } from "react";
-import { X, Check, Copy, ShieldAlert, FileText, CheckCheck } from "lucide-react";
+import { X, Check, Copy, ShieldAlert, FileText, CheckCheck, Wand2 } from "lucide-react";
 import { FindingDTO } from "../types";
 
 interface FindingDrawerProps {
   finding: FindingDTO | null;
   onClose: () => void;
   onToggleResolve: (id: string) => void;
+  onProposeFix: (finding: FindingDTO) => void;
 }
 
 export const FindingDrawer: React.FC<FindingDrawerProps> = ({
   finding,
   onClose,
   onToggleResolve,
+  onProposeFix,
 }) => {
   const [copied, setCopied] = useState(false);
 
@@ -181,26 +183,37 @@ export const FindingDrawer: React.FC<FindingDrawerProps> = ({
       </div>
 
       {/* Footer Actions */}
-      <div className="p-3 border-t border-border-subtle bg-surface-canvas flex items-center justify-between gap-2">
+      <div className="p-3 border-t border-border-subtle bg-surface-canvas space-y-2">
         <button
-          onClick={() => onToggleResolve(finding.id)}
-          className={`flex-1 py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors ${
-            finding.resolved
-              ? "bg-status-clean/20 border-status-clean/40 text-status-clean"
-              : "bg-surface-elevated hover:bg-surface-elevated/80 border-border-subtle text-text-primary"
-          }`}
+          onClick={() => onProposeFix(finding)}
+          className="w-full py-2 px-3 rounded-lg bg-secondary/15 border border-secondary/40 text-secondary hover:bg-secondary/25 transition-colors text-xs font-semibold flex items-center justify-center space-x-1.5"
+          title="Ask the remediation engine for a safe, reviewable patch"
         >
-          <Check className="w-3.5 h-3.5" />
-          <span>{finding.resolved ? "Resolved (Re-open)" : "Mark as Resolved"}</span>
+          <Wand2 className="w-3.5 h-3.5" />
+          <span>Propose Fix</span>
         </button>
 
-        <button
-          onClick={copyPatch}
-          className="flex-1 py-2 px-3 rounded-lg bg-primary hover:bg-[#239f63] text-white text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors shadow-glow"
-        >
-          <Copy className="w-3.5 h-3.5" />
-          <span>Copy Patch</span>
-        </button>
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={() => onToggleResolve(finding.id)}
+            className={`flex-1 py-2 px-3 rounded-lg border text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors ${
+              finding.resolved
+                ? "bg-status-clean/20 border-status-clean/40 text-status-clean"
+                : "bg-surface-elevated hover:bg-surface-elevated/80 border-border-subtle text-text-primary"
+            }`}
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>{finding.resolved ? "Resolved (Re-open)" : "Mark as Resolved"}</span>
+          </button>
+
+          <button
+            onClick={copyPatch}
+            className="flex-1 py-2 px-3 rounded-lg bg-primary hover:bg-[#239f63] text-white text-xs font-semibold flex items-center justify-center space-x-1.5 transition-colors shadow-glow"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>Copy Patch</span>
+          </button>
+        </div>
       </div>
     </div>
   );

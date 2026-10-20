@@ -1,7 +1,7 @@
 # CodeRadar Studio: Phase 6 - Diff Modal, Safe Atomic Patching & SQLite History
 
 > **Document ID:** `CR-SPEC-13`
-> **Status:** Draft - implemented in this pull request (gate evidence in section 9)
+> **Status:** Complete - implemented, gated and verified (see §9)
 > **Milestone:** [Phase 6 - Diff modal, safe patching, history](https://github.com/mahmoudfarahat2647/coderadar/milestone/7)
 > **Closes task line:** Issue [#7](https://github.com/mahmoudfarahat2647/coderadar/issues/7)
 > **Companion:** [`01-BRD-AND-MVP-REQUIREMENTS.md`](./01-BRD-AND-MVP-REQUIREMENTS.md), [`02-CLEAN-ARCHITECTURE-BLUEPRINT.md`](./02-CLEAN-ARCHITECTURE-BLUEPRINT.md)
@@ -143,8 +143,13 @@ DTO shapes (snake_case field names, matching the existing `FindingDTO` conventio
     "rule_id": "SEC-JWT-003",
     "original_sha256": "9f2c...",
     "original_line_count": 5,
+    "edits": [
+      { "start_line": 2, "end_line": 2, "start_offset": 34, "end_offset": 52,
+        "replacement": "jwt.verify(token, process.env.JWT_SECRET)" }
+    ],
     "new_content": "...",
-    "unified_diff": "..."
+    "unified_diff": "...",
+    "explanation": "jwt.decode() reads the payload without checking the signature ..."
   }
 }
 
@@ -174,10 +179,25 @@ DTO shapes (snake_case field names, matching the existing `FindingDTO` conventio
 
 | Requirement | Test |
 | :--- | :--- |
-| A modified file is never corrupted or overwritten unsafely | `crates/coderadar-infrastructure/tests/patch_safety.rs` |
-| History shows two or more scans with a trend | `crates/coderadar-infrastructure/tests/scan_history.rs` |
-| Templates are deterministic and conservative | `crates/coderadar-usecases/src/fixes.rs` unit tests |
+| A modified file is never corrupted or overwritten unsafely | `crates/coderadar-infrastructure/tests/patch_safety.rs` (8 cases) and `crates/coderadar-infrastructure/tests/patch_flow.rs` (4 end-to-end cases) |
+| History shows two or more scans with a trend | `crates/coderadar-infrastructure/tests/scan_history.rs` (6 cases) + `src/utils/trendGeometry.test.ts` (5 assertions) |
+| Templates are deterministic and conservative | `crates/coderadar-usecases/src/fixes.rs` (10 unit tests) |
+| The patch model is pure | `crates/coderadar-domain/tests/patch.rs` (8 tests) |
 | The domain stays free of I/O | `crates/coderadar-infrastructure/tests/architecture_boundaries.rs` + `scripts/check-architecture.sh` |
+
+The same gates run in CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` and
+the MSRV 1.82 check.
+
+### 9.1 Guard matrix
+
+| Attempted patch | Result |
+| :--- | :--- |
+| The file still matches the previewed fingerprint | `applied` (atomic write) |
+| The file changed after the preview | `conflict` - nothing is written |
+| The payload does not match the current content | `rejected` - nothing is written |
+| `../outside.ts` | `rejected` - the workspace guard refuses it |
+| An absolute path | `rejected` |
+| A symlink inside the workspace pointing outside | `rejected` |
 
 ## 10. Non-goals
 

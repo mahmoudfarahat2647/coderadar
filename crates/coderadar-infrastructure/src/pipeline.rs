@@ -334,7 +334,8 @@ impl ScanPipeline {
             root_dir,
             ScanMode::FullScan,
             started_ms,
-        );
+        )
+        .with_files_scanned(module_chunks);
         for finding in findings {
             session.push(finding);
         }
