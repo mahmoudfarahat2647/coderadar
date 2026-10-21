@@ -218,7 +218,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 
 ## 5. Blocking defect found while measuring the desktop app
 
-The desktop app **does not start** as committed:
+The desktop app **did not start** as committed:
 
 ```
 thread 'main' panicked at src\main.rs:22:10:
@@ -233,9 +233,13 @@ unit type, so the `"plugins": { "dialog": {} }` entry of
 `src-tauri/tauri.conf.json` can no longer be deserialised. The application
 panics during the Tauri initialisation, before any window is created.
 
-The numbers of §2.3 were therefore obtained from a **scratch copy** of the
-crate (outside the repository, with the `plugins` block removed from the
-copied `tauri.conf.json`); no file of the repository was modified for this
-measurement. Fixing `src-tauri/tauri.conf.json` (or pinning
-`tauri-plugin-dialog` to `=2.7.3`) is outside the scope of this track and
-remains open.
+**Fixed in Phase 7.** The `plugins` block was removed from
+`src-tauri/tauri.conf.json` — the dialog plugin has no configuration — and the
+application now starts again (verified on Windows: the process stays alive and
+the window is created). The defect and its fix are recorded as `D-1` in
+[`coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md`](../coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md).
+
+The numbers of §2.3 were measured before the fix, from a **scratch copy** of
+the crate (outside the repository, with the `plugins` block removed from the
+copied `tauri.conf.json`); no file of the repository was modified for that
+measurement.

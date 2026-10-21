@@ -9,8 +9,11 @@
 - Test: `cargo test --workspace --all-targets` — single test: `cargo test -p coderadar-infrastructure --test scan_pipeline`
 - Lint: `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` (CI sets `RUSTFLAGS: -D warnings`, so any warning fails)
 - Architecture guard: `bash scripts/check-architecture.sh` (needs Git Bash/WSL on Windows; the same rules are re-checked by `crates/coderadar-infrastructure/tests/architecture_boundaries.rs`)
+- Security guard (NFR-05): `bash scripts/check-security.sh` (needs Git Bash/WSL on Windows; the same rules are re-checked by `crates/coderadar-infrastructure/tests/security_posture.rs`)
+- Performance gate (NFR-01): `cargo test --release -p coderadar-infrastructure --test performance_budget --test memory_budget`
 - MSRV gate: `cargo +1.82.0 check --workspace --exclude coderadar-desktop --all-targets`
 - CLI: `cargo run -p coderadar-infrastructure --bin coderadar -- scan <path> [--pretty]` (JSON on stdout; exit 0 = ok, 1 = runtime error, 2 = usage error)
+- CLI Markdown export (FR-07): `coderadar scan <path> --markdown` prints the report on stdout; `coderadar report <path> [--out <file>]` writes it (default file name `report.md`)
 
 ## Enforced architecture (compiler + CI, not suggestive)
 - Four layers: `coderadar-domain` (std-only, **zero** deps) → `coderadar-usecases` (only `coderadar-domain`; async via `std::future::Future` trait objects in `src/ports.rs`) → `coderadar-adapters` (never `coderadar-infrastructure`) → `coderadar-infrastructure` (only layer allowed external crates; hosts the `coderadar` binary).
@@ -21,7 +24,7 @@
 - Workspace `rust-version = "1.82"`. Exact pins exist because newer releases require Rust 1.85+ (edition2024): `ignore =0.4.23`, `globset =0.4.15`, `tempfile =3.14.0` in Cargo.toml; `tree-sitter-language 0.1.5`, `indexmap 2.7.1`, `icu_* 2.2.0`, and `idna_adapter 1.1.0` pinned in `Cargo.lock`. Phase 6 added `sha2 =0.10`, `rusqlite =0.32.1` and `libsqlite3-sys =0.30.1` (SQLite is bundled, no system library) — also pinned for the same reason. After any dependency/lockfile change run the 1.82 check above.
 
 ## Patch safety (Phase 6)
-- Every file write goes through `WorkspaceGuard` (`crates/coderadar-infrastructure/src/workspace_guard.rs`): absolute paths, `..` components and symlink escapes are refused. `patching.rs::atomic_write` is crate-private for that reason — only `SafePatchApplier` writes.
+- Every file write **into a workspace** goes through `WorkspaceGuard` (`crates/coderadar-infrastructure/src/workspace_guard.rs`): absolute paths, `..` components and symlink escapes are refused. `patching.rs::atomic_write` is crate-private for that reason — its callers are a closed set: `SafePatchApplier` (Phase 6, workspace-scoped) and the Markdown export (`export.rs`, Phase 7, whose target is the path the user picked in the save dialog and is therefore outside any workspace). The security guard enforces that closed set.
 - Every write is atomic: staging file in the same directory + `rename` (`patching.rs::atomic_write`). The staging file is created with `create_new`, so a path planted by someone else is never opened, and the target's permissions are copied onto it (a failed copy aborts the write).
 - Every patch carries the SHA-256 of the file it was built against; a mismatch is a `PatchOutcome::Conflict` and nothing is written.
 - Edit offsets coming from the UI must fall on UTF-8 character boundaries (`domain::patch::apply_edits`); anything else is a `PatchOutcome::Rejected`, never a panic.
@@ -33,10 +36,15 @@
 
 ## Testing quirks
 - `crates/coderadar-infrastructure/tests/fixtures/known-bad-repo/expected-findings.json` fixes the *exact* expected set (15 findings as `(rule_id, file, line_start)` triples); scan tests assert exact equality, so heuristic or fixture changes require updating it.
-- `tests/memory_budget.rs` is `#![cfg(target_os = "linux")]`: it silently compiles to nothing on Windows; the 45 MB RSS budget is only measured in CI.
+- `tests/memory_budget.rs` is **no longer Linux-only**: the peak-RSS sampler in `tests/common/rss.rs` is cross-platform (Linux `VmHWM`, macOS `ps` with the maximum over the samples, Windows `PeakWorkingSet64`), so the 45 MB budget is measured on every platform, not only in CI. The cold-start gate lives in `tests/performance_budget.rs` (1 200 ms in a release build, relaxed to 5 000 ms in debug).
 - CLI tests spawn the real binary via `env!("CARGO_BIN_EXE_coderadar")`.
+- The release workflow `.github/workflows/release.yml` builds a **draft** release with the `.msi`/`.exe` (Windows), `.dmg` (macOS aarch64 + x86_64) and `.deb`/`.AppImage` (Linux) matrix, plus a `SHA256SUMS.txt`; the draft is published by a human after the clean-machine smoke test.
+
+## Desktop shell (Tauri)
+- `src-tauri/tauri.conf.json` must **not** carry a `plugins.dialog` entry: since `tauri-plugin-dialog` 2.8 the plugin has no configuration (its config type became a unit), and the entry makes Tauri panic during initialisation — the desktop app then never starts. The dialog needs no configuration at all.
+- The desktop crate is excluded from the MSRV gate (`cargo +1.82.0 check --workspace --exclude coderadar-desktop`); the workspace crates are the ones pinned to 1.82.
 
 ## Workflow
-- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phases 0–6 are complete; Phase 7 (hardening, packaging, release v1.0) is next.
+- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phases 0–7 are complete (the Phase 7 evidence is in `coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md`); Phase 8 (post-MVP: PR mode + Tier 2 auto-fix) is next.
 - Code, comments, and commit messages are English; `README.md` is Arabic — keep it Arabic when editing. `coderadar-specs/*.md` are written in English (the Phase 0-5 documents) — follow the language of the document you edit.
 - Code comments cite spec sections (`CR-SPEC-02 §3`); before changing architecture or domain rules, read the matching `coderadar-specs/` document.
