@@ -19,7 +19,7 @@ use coderadar_infrastructure::{
     scan_project, write_markdown_report, ScanReport, DEFAULT_REPORT_FILE_NAME,
 };
 
-const USAGE: &str = "usage: coderadar scan <path> [--pretty] [--markdown]\n       coderadar report <path> [--out <file>]";
+const USAGE: &str = "usage: coderadar scan <path> [--pretty] [--markdown]\n       coderadar report <path> [--out <file>]\n       (`--out` is only valid for `report`)";
 
 /// The two modes of the CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +90,11 @@ fn run(args: &[String]) -> Result<ExitCode, ExitCode> {
 
     if mode == Mode::Report && markdown {
         eprintln!("`--markdown` is implied by `report`\n{USAGE}");
+        return Err(ExitCode::from(2));
+    }
+
+    if mode == Mode::Scan && output.is_some() {
+        eprintln!("`--out` is only valid for `report`\n{USAGE}");
         return Err(ExitCode::from(2));
     }
 

@@ -169,6 +169,29 @@ fn the_report_command_defaults_to_report_md() {
 }
 
 #[test]
+fn out_is_rejected_in_scan_mode_and_writes_no_file() {
+    let directory = tempfile::TempDir::new().expect("temp dir");
+    let target = directory.path().join("out.md");
+
+    let output = run(&[
+        "scan",
+        FIXTURE,
+        "--out",
+        target.to_str().expect("path is UTF-8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "usage errors never write stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`--out` is only valid for `report`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("usage"), "stderr: {stderr}");
+    assert!(!target.exists(), "scan must not create the report file");
+}
+
+#[test]
 fn an_out_flag_without_a_value_is_a_usage_error() {
     let output = run(&["report", FIXTURE, "--out"]);
 
