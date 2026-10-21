@@ -199,7 +199,12 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
 5. **Shared machine.** The reference machine ran other builds during the
    measurement (§1.4). The gates are serialized against each other, but not
    against the rest of the machine; the recorded values are the pessimistic
-   end of the observed range.
+   end of the observed range. The effect is visible on the peak working set of
+   the 5 000-file scan on Windows: on an idle machine it measures
+   10.5–10.9 MB, while a run that overlapped a release build reached 22.3 MB —
+   still less than half of the 45 MB budget, but a reminder that the working
+   set of a process depends on how much of the system memory the OS is willing
+   to fault in.
 6. **macOS is a sampled maximum, not a kernel counter.** `ps` reports the
    current resident set, so a spike between two samples is invisible. The
    sampler therefore keeps the maximum over the samples; the true peak can
