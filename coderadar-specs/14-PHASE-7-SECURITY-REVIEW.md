@@ -152,8 +152,9 @@ and is written verbatim. Containing the export inside the workspace root would m
 The enforced invariant is therefore the precise and honest version:
 
 > Every write **into the user's workspace** goes through `WorkspaceGuard`; the only other
-> writer is the Markdown export, whose target is an explicit path chosen by the user; and
-> the atomic write helper is crate-private with a closed set of callers.
+> writer is the Markdown export, whose target is an explicit path chosen by the user (the
+> OS save dialog or the CLI `--out`); and the atomic write helper is crate-private with a
+> closed set of callers.
 
 This is why invariant 7 checks the *callers* of `atomic_write` instead of assuming there is
 only one.
@@ -203,8 +204,8 @@ posture holds, a green summary:
 [security] checked: the Tauri ACL grants no dangerous permission
 [security] checked: the webview loads no remote resource
 [security] checked: the API key is never persisted in plaintext
-[security] checked: every workspace write goes through the workspace guard
-[security] OK: no process spawn, no shell interpreter, strict local CSP, minimal ACL, no remote resource, no plaintext secret, workspace writes guarded.
+[security] checked: the patch applier resolves every workspace write through the workspace guard; the Markdown export writes only the user-chosen report path
+[security] OK: no process spawn, no shell interpreter, strict local CSP, minimal ACL, no remote resource, no plaintext secret, patch-applied workspace writes guarded.
 ```
 
 A breach prints a red `[security] VIOLATION:` line per problem and exits `1`:

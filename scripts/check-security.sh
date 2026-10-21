@@ -2,7 +2,7 @@
 #
 # Enforces the Desktop AppSec posture required by NFR-05 (`CR-SPEC-01` §4):
 #
-#   1. path traversal guard   — every workspace write is contained;
+#   1. path traversal guard   — every patch-applied workspace write is contained;
 #   2. keychain secret storage — the API key is never written in plaintext;
 #   3. strict webview CSP     — no remote origin, no inline/eval script;
 #
@@ -315,7 +315,7 @@ fi
 checked "the API key is never persisted in plaintext"
 
 # ---------------------------------------------------------------------------
-# 7. The workspace guard contains every workspace write.
+# 7. The workspace guard contains every patch-applied workspace write.
 # ---------------------------------------------------------------------------
 GUARD="$ROOT/crates/coderadar-infrastructure/src/workspace_guard.rs"
 PATCHING="$ROOT/crates/coderadar-infrastructure/src/patching.rs"
@@ -356,8 +356,8 @@ if [ -f "$INFRA_LIB" ]; then
 fi
 
 # The atomic write helper has a closed set of callers: the patch applier
-# (which resolves the target through the workspace guard) and the Markdown
-# export (whose target is an absolute path chosen by the user).
+# (which resolves every workspace write through the workspace guard) and the
+# Markdown export (which writes only the user-chosen report path).
 while IFS= read -r hit; do
   [ -z "$hit" ] && continue
   FILE="${hit%%:*}"
@@ -369,7 +369,7 @@ while IFS= read -r hit; do
 done <<EOF
 $(crate_matches "atomic_write")
 EOF
-checked "every workspace write goes through the workspace guard"
+checked "the patch applier resolves every workspace write through the workspace guard; the Markdown export writes only the user-chosen report path"
 
 # ---------------------------------------------------------------------------
 if [ "$FAIL" -ne 0 ]; then
@@ -377,4 +377,4 @@ if [ "$FAIL" -ne 0 ]; then
   exit 1
 fi
 
-printf '\033[32m[security] OK:\033[0m no process spawn, no shell interpreter, strict local CSP, minimal ACL, no remote resource, no plaintext secret, workspace writes guarded.\n'
+printf '\033[32m[security] OK:\033[0m no process spawn, no shell interpreter, strict local CSP, minimal ACL, no remote resource, no plaintext secret, patch-applied workspace writes guarded.\n'

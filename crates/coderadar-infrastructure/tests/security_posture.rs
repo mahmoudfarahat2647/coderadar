@@ -13,7 +13,12 @@
 //!    permission;
 //! 5. the webview loads no remote resource;
 //! 6. the API key is never persisted in plaintext;
-//! 7. every workspace write goes through the workspace guard.
+//! 7. the patch applier resolves every workspace write through the workspace
+//!    guard; the Markdown export writes only the user-chosen report path.
+//!
+//! The repository is located from the compile-time `CARGO_MANIFEST_DIR`; when
+//! the expected layout is missing the suite panics instead of skipping, so a
+//! layout regression can never make the seven invariants pass vacuously.
 //!
 //! The forbidden tokens are assembled at run time from fragments so that this
 //! file never contains a complete forbidden token — the shell guard greps the
@@ -26,23 +31,32 @@ use std::path::{Path, PathBuf};
 const SKIPPED_DIRECTORIES: [&str; 6] =
     ["tests", "scripts", "node_modules", "target", "dist", ".git"];
 
-/// The repository root, when the test runs from a normal checkout.
+/// The repository root.
 ///
 /// `CARGO_MANIFEST_DIR` is `<root>/crates/coderadar-infrastructure`, so the
-/// root is two levels up.
-fn repository_root() -> Option<PathBuf> {
+/// root is two levels up. The expected layout is a workspace root holding
+/// `Cargo.toml` and `src-tauri/`; anything else is a hard failure, because a
+/// silent skip would let the invariants pass vacuously.
+fn repository_root() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent()?.parent()?;
-    if root.join("Cargo.toml").is_file() && root.join("src-tauri").is_dir() {
-        Some(root.to_path_buf())
-    } else {
-        None
+    let root = manifest
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            panic!(
+                "[security] expected the workspace root two levels above {}, \
+                 with Cargo.toml and src-tauri/",
+                manifest.display()
+            )
+        });
+    if !root.join("Cargo.toml").is_file() || !root.join("src-tauri").is_dir() {
+        panic!(
+            "[security] expected the workspace root at {}, with Cargo.toml and src-tauri/",
+            root.display()
+        );
     }
-}
-
-/// Announce that a check could not run.
-fn skip(reason: &str) {
-    eprintln!("[security] {reason}: the check is skipped");
+    root
 }
 
 /// A handle on the repository under test.
@@ -51,9 +65,11 @@ struct Repository {
 }
 
 impl Repository {
-    /// Locate the repository, or `None` when it cannot be found.
-    fn locate() -> Option<Self> {
-        repository_root().map(|root| Self { root })
+    /// Locate the repository; a layout regression is a hard failure.
+    fn locate() -> Self {
+        Self {
+            root: repository_root(),
+        }
     }
 
     /// Absolute path of a repository-relative path.
@@ -256,10 +272,7 @@ fn is_remote_resource_line(line: &str) -> bool {
 // ---------------------------------------------------------------------------
 #[test]
 fn the_product_sources_never_spawn_a_process() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let needles = [
         format!("std::process:{}", "Command"),
@@ -294,10 +307,7 @@ fn the_product_sources_never_spawn_a_process() {
 // ---------------------------------------------------------------------------
 #[test]
 fn no_shell_interpreter_is_invoked() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let needles = [
         format!("sh {}", "-c"),
@@ -307,13 +317,34 @@ fn no_shell_interpreter_is_invoked() {
         format!("powershell {}", "-Command"),
         format!("powershell {}", "-EncodedCommand"),
     ];
-    let eval_needle = format!("eval{}", "(");
+
+    /// `true` when the line calls `eval(...)`; a token embedded in a longer
+    /// identifier (`interval(`, `retrieval(`) is not a call.
+    fn is_eval_call(line: &str) -> bool {
+        let mut offset = 0;
+        while let Some(index) = line[offset..].find("eval") {
+            let start = offset + index;
+            let preceded_by_identifier = line[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
+            let after = &line[start + "eval".len()..];
+            let followed_by_call = after
+                .trim_start_matches(|ch: char| ch.is_whitespace())
+                .starts_with('(');
+            if !preceded_by_identifier && followed_by_call {
+                return true;
+            }
+            offset = start + "eval".len();
+        }
+        false
+    }
 
     let mut offenders = Vec::new();
     for file in repo.rust_files(&repo.product_source_dirs()) {
         let content = fs::read_to_string(&file).unwrap_or_default();
         for (number, line) in content.lines().enumerate() {
-            if needles.iter().any(|needle| line.contains(needle.as_str())) {
+            if needles.iter().any(|needle| line.contains(needle.as_str())) || is_eval_call(line) {
                 offenders.push(format!(
                     "{}:{}: {}",
                     repo.display(&file),
@@ -326,27 +357,13 @@ fn no_shell_interpreter_is_invoked() {
     for file in repo.frontend_files() {
         let content = fs::read_to_string(&file).unwrap_or_default();
         for (number, line) in content.lines().enumerate() {
-            if needles.iter().any(|needle| line.contains(needle.as_str())) {
+            if needles.iter().any(|needle| line.contains(needle.as_str())) || is_eval_call(line) {
                 offenders.push(format!(
                     "{}:{}: {}",
                     repo.display(&file),
                     number + 1,
                     line.trim()
                 ));
-            }
-            if let Some(index) = line.find(&eval_needle) {
-                let preceded_by_identifier = line[..index]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|ch| ch.is_alphanumeric() || ch == '_');
-                if !preceded_by_identifier {
-                    offenders.push(format!(
-                        "{}:{}: {}",
-                        repo.display(&file),
-                        number + 1,
-                        line.trim()
-                    ));
-                }
             }
         }
     }
@@ -363,10 +380,7 @@ fn no_shell_interpreter_is_invoked() {
 // ---------------------------------------------------------------------------
 #[test]
 fn the_webview_csp_is_strict_and_free_of_any_remote_origin() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let config = repo.read("src-tauri/tauri.conf.json");
     let csp = json_string_field(&config, "csp")
@@ -418,10 +432,7 @@ fn the_webview_csp_is_strict_and_free_of_any_remote_origin() {
 // ---------------------------------------------------------------------------
 #[test]
 fn the_tauri_acl_grants_no_dangerous_permission() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let capabilities = repo.read("src-tauri/capabilities/default.json");
     let permissions = json_string_array(&capabilities, "permissions");
@@ -452,10 +463,7 @@ fn the_tauri_acl_grants_no_dangerous_permission() {
 // ---------------------------------------------------------------------------
 #[test]
 fn the_webview_loads_no_remote_resource() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let index = repo.read("index.html");
     assert!(
@@ -493,10 +501,7 @@ fn the_webview_loads_no_remote_resource() {
 // ---------------------------------------------------------------------------
 #[test]
 fn the_api_key_is_never_persisted_in_plaintext() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     // The Tauri shell never writes to the filesystem.
     let write_needles = [
@@ -599,14 +604,12 @@ fn the_api_key_is_never_persisted_in_plaintext() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Every workspace write goes through the workspace guard.
+// 7. The patch applier guards every workspace write; the Markdown export
+//    writes only the user-chosen report path.
 // ---------------------------------------------------------------------------
 #[test]
 fn every_workspace_write_goes_through_the_workspace_guard() {
-    let Some(repo) = Repository::locate() else {
-        skip("the repository root was not found");
-        return;
-    };
+    let repo = Repository::locate();
 
     let guard = repo.read("crates/coderadar-infrastructure/src/workspace_guard.rs");
     assert!(
