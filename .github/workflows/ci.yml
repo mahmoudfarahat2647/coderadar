@@ -18,6 +18,16 @@ jobs:
       - name: Enforce the Clean Architecture Dependency Rule
         run: bash scripts/check-architecture.sh
 
+  security:
+    name: Security posture (NFR-05)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Guards path traversal, the strict CSP, the keychain storage and the
+      # absence of shell injection (CR-SPEC-01 NFR-05).
+      - name: Enforce the security posture
+        run: bash scripts/check-security.sh
+
   rules-manifest:
     name: Rules manifest contract
     runs-on: ubuntu-latest
@@ -63,6 +73,10 @@ jobs:
           cargo build --manifest-path src-tauri/Cargo.toml --verbose
       - name: cargo test
         run: cargo test --workspace --all-targets --verbose
+      # The desktop binary has `test = false`, so this is a compile check of the
+      # IPC layer (commands, DTOs and the Tauri bridge).
+      - name: cargo test (desktop crate)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --verbose
       - name: cargo clippy
         run: |
           cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -101,4 +115,20 @@ jobs:
         run: npm run test:geometry
       - name: Trend geometry tests
         run: npm run test:trend
+
+  performance:
+    name: Performance budget (NFR-01)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The budgets (cold start < 1.2 s, idle RSS < 45 MB) are only meaningful
+      # for an optimised build, so the suite runs in release mode.
+      - name: cargo test (release, performance budget)
+        run: cargo test --release -p coderadar-infrastructure --test performance_budget --test memory_budget --verbose
 

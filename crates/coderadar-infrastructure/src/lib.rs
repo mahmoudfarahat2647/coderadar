@@ -14,6 +14,7 @@ mod composition;
 mod engine;
 mod engine_rules;
 mod executor;
+mod export;
 mod hashing;
 mod heuristics;
 mod history;
@@ -44,6 +45,9 @@ pub use engine::{
 };
 pub use engine_rules::{is_semantic_rule, GIT_CHANGESET_IDS, TIER0_OWNED_IDS};
 pub use executor::block_on;
+pub use export::{
+    markdown_from_report, write_markdown_report, ExportOutcome, DEFAULT_REPORT_FILE_NAME,
+};
 pub use hashing::{sha256_hex, sha256_hex_bytes};
 pub use history::{FindingSnapshot, SqliteScanHistoryRepository};
 pub use jev::{

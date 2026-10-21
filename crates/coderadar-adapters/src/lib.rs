@@ -10,9 +10,13 @@
 mod diff;
 mod dto;
 mod radar;
+mod report_markdown;
 
 pub use diff::{unified_diff, UnifiedDiff};
 pub use dto::{
     FindingDTO, HistoryPointDTO, LineEditDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
 };
 pub use radar::{compute_angle_jitter, PolarCoordinate, RadarPresenter, MAX_ANGLE_JITTER_DEG};
+pub use report_markdown::{
+    format_timestamp, render_markdown_report, MarkdownFinding, MarkdownReport, MarkdownReportInput,
+};

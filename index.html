@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CodeRadar Studio — Code & Security Radar</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!--
+      No external font is loaded: the app is local-first and offline capable
+      (NFR-03) and the Content Security Policy forbids every remote origin
+      (NFR-05). The system font stack declared in tailwind.config.js is used
+      instead.
+    -->
   </head>
   <body class="bg-surface-canvas text-text-primary antialiased font-sans select-none overflow-hidden">
     <div id="root"></div>

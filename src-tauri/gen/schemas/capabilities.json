@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions capability for CodeRadar Studio desktop shell","local":true,"windows":["main"],"permissions":["core:default","dialog:default","dialog:allow-open"]}}
+{"default":{"identifier":"default","description":"Default permissions capability for CodeRadar Studio desktop shell","local":true,"windows":["main"],"permissions":["core:default","dialog:default","dialog:allow-open","dialog:allow-save"]}}

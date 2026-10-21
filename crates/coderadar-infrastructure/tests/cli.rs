@@ -101,3 +101,109 @@ fn help_prints_usage_on_stdout() {
     assert!(stdout.contains("usage"), "stdout: {stdout}");
     assert!(output.stderr.is_empty());
 }
+
+#[test]
+fn markdown_scan_prints_the_markdown_report() {
+    let output = run(&["scan", FIXTURE, "--markdown"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = stdout_string(&output);
+    assert!(stdout.starts_with("# CodeRadar Studio — Scan Report"));
+    assert!(stdout.contains("## Executive summary"));
+    assert!(stdout.contains("## Findings by category"));
+    assert!(stdout.contains("| Findings | 15 |"));
+}
+
+#[test]
+fn the_report_command_writes_a_markdown_file() {
+    let directory = tempfile::TempDir::new().expect("temp dir");
+    let target = directory.path().join("report.md");
+
+    let output = run(&[
+        "report",
+        FIXTURE,
+        "--out",
+        target.to_str().expect("path is UTF-8"),
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let written = std::fs::read_to_string(&target).expect("the report is readable");
+    assert!(written.starts_with("# CodeRadar Studio — Scan Report"));
+    assert!(written.contains("| Findings | 15 |"));
+    assert!(
+        stdout_string(&output).contains("report written to"),
+        "the command confirms the written path"
+    );
+}
+
+#[test]
+fn the_report_command_defaults_to_report_md() {
+    let directory = tempfile::TempDir::new().expect("temp dir");
+
+    let output = Command::new(BIN)
+        .args(["report", FIXTURE])
+        .current_dir(directory.path())
+        .output()
+        .expect("coderadar binary is runnable");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        directory.path().join("report.md").exists(),
+        "the default report file is `report.md`"
+    );
+}
+
+#[test]
+fn out_is_rejected_in_scan_mode_and_writes_no_file() {
+    let directory = tempfile::TempDir::new().expect("temp dir");
+    let target = directory.path().join("out.md");
+
+    let output = run(&[
+        "scan",
+        FIXTURE,
+        "--out",
+        target.to_str().expect("path is UTF-8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "usage errors never write stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`--out` is only valid for `report`"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("usage"), "stderr: {stderr}");
+    assert!(!target.exists(), "scan must not create the report file");
+}
+
+#[test]
+fn an_out_flag_without_a_value_is_a_usage_error() {
+    let output = run(&["report", FIXTURE, "--out"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "usage errors never write stdout");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--out"));
+}
+
+#[test]
+fn markdown_is_implied_by_the_report_command() {
+    let output = run(&["report", FIXTURE, "--markdown"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "usage errors never write stdout");
+}

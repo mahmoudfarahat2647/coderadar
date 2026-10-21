@@ -24,12 +24,14 @@ import {
   SeverityTotals,
 } from "./types";
 import {
+  exportReport,
   getDefaultScanPath,
   getEngineStatus,
   getScanHistory,
   isTauriEnvironment,
   listenToScanBatches,
   openFolderDialog,
+  pickReportPath,
   previewPatch,
   startScan,
 } from "./services/tauri";
@@ -223,6 +225,29 @@ export const App: React.FC = () => {
       setErrorMessage(typeof err === "string" ? err : String(err));
     } finally {
       setPatchBusy(false);
+    }
+  };
+
+  // Export the report of the last scan as a Markdown document (Phase 7).
+  const handleExportReport = async () => {
+    setErrorMessage(null);
+    try {
+      const targetPath = await pickReportPath();
+      // The user closed the save dialog: nothing to do.
+      if (!targetPath) return;
+
+      const outcome = await exportReport(targetPath);
+      if (!outcome) {
+        setErrorMessage(
+          "Report export is only available in the CodeRadar desktop app (Tauri runtime)."
+        );
+        return;
+      }
+      setInfoBanner(
+        `Report exported to ${outcome.path} (${outcome.findings} findings, ${outcome.bytes} bytes).`
+      );
+    } catch (err) {
+      setErrorMessage(typeof err === "string" ? err : String(err));
     }
   };
 
@@ -434,6 +459,8 @@ export const App: React.FC = () => {
         engineStatus={engineStatus}
         activeTab={activeTab}
         onTabChange={handleTabChange}
+        onExportReport={handleExportReport}
+        exportDisabled={isScanning}
       />
 
       {/* Info Banner */}

@@ -176,3 +176,10 @@ export interface HistoryPointDTO {
   low: number;
   compliance_percent: number;
 }
+
+/** Phase 7 — Markdown report export (FR-07). */
+export interface ExportOutcomeDTO {
+  path: string;
+  bytes: number;
+  findings: number;
+}

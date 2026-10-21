@@ -33,6 +33,8 @@ pub struct ScanStatsReport {
     pub module_chunks: usize,
     /// Wall-clock duration of the scan.
     pub duration_ms: u64,
+    /// Compliance score of the scan, 0-100.
+    pub compliance_percent: u8,
 }
 
 /// Findings counted by severity.
@@ -122,6 +124,7 @@ impl ScanReport {
         duration_ms: u64,
     ) -> Self {
         let session = &outcome.session;
+        let summary = session.summary();
         let finished_at_unix_ms = session
             .finished_at_unix_ms
             .unwrap_or(session.started_at_unix_ms);
@@ -138,6 +141,7 @@ impl ScanReport {
                 ast_chunks: outcome.ast_chunks,
                 module_chunks: outcome.module_chunks,
                 duration_ms,
+                compliance_percent: summary.compliance_percent,
             },
             session: SessionReport {
                 id: session.id.clone(),
@@ -186,7 +190,8 @@ mod tests {
     use crate::rules_manifest::RuleManifest;
 
     fn sample_outcome() -> ScanOutcome {
-        let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000);
+        let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
+            .with_files_scanned(2);
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -224,6 +229,7 @@ mod tests {
         assert_eq!(value["scan"]["ast_chunks"], 5);
         assert_eq!(value["scan"]["module_chunks"], 2);
         assert_eq!(value["scan"]["duration_ms"], 42);
+        assert_eq!(value["scan"]["compliance_percent"], 50);
 
         assert_eq!(value["session"]["id"], "scan-1");
         assert_eq!(value["session"]["root_dir"], "/tmp/root");

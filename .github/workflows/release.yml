@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to release (e.g. v1.0.0)"
+        required: true
+        type: string
+
+# Creating the GitHub release and uploading the installers needs write access
+# to the repository contents.
+permissions:
+  contents: write
+
+# A re-run for the same ref cancels the previous (still running) attempt so a
+# stale build can never overwrite the artefacts of a newer one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  resolve:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the release tag and the application version
+        id: meta
+        shell: bash
+        env:
+          # The dispatch input is user supplied: pass it through the environment
+          # instead of interpolating it into the script body.
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # The pushed tag wins; a manual run may override it with an explicit version.
+          tag="${DISPATCH_VERSION:-$REF_NAME}"
+          case "$tag" in
+            v[0-9]*)
+              ;;
+            *)
+              echo "::error::The release tag must look like v1.0.0 (got '$tag')"
+              exit 1
+              ;;
+          esac
+          version="$(python3 -c 'import json;print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          if [ "$tag" != "v$version" ]; then
+            echo "::warning::Tag '$tag' does not match the application version '$version'."
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (application version $version)"
+
+  build:
+    name: Build ${{ matrix.target }} installers
+    needs: resolve
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      # One broken platform must not cancel the other builds: a partial matrix
+      # still produces usable installers.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+            macos_deployment_target: "10.15"
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
+            macos_deployment_target: "10.15"
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install the frontend dependencies
+        run: npm ci
+      - name: Install the Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          # The Linux bundler needs WebKitGTK, GTK, an app indicator and librsvg
+          # to produce the .deb and the AppImage.
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build the installers and attach them to the draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Matches bundle.macOS.minimumSystemVersion of the Tauri configuration.
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+        with:
+          projectPath: ./src-tauri
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          tagName: ${{ needs.resolve.outputs.tag }}
+          releaseName: CodeRadar Studio ${{ needs.resolve.outputs.version }}
+          # The release stays a draft: it is published by hand after the smoke test.
+          releaseDraft: true
+          prerelease: false
+          # No updater artefacts are configured (bundle.createUpdaterArtifacts is false),
+          # so the updater manifest must not be generated.
+          uploadUpdaterJson: false
+          # The four matrix legs race for the same draft release: retry on a conflict.
+          retryAttempts: 3
+      - name: Upload the installers as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/{dmg,deb,appimage,msi,nsis}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  checksums:
+    name: Checksums
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the installers built by the matrix
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Compute the SHA-256 checksums
+        shell: bash
+        run: |
+          cd artifacts
+          # Exclude the manifest itself so the file list stays reproducible.
+          find . -type f ! -name 'SHA256SUMS.txt' -printf '%P\n' | LC_ALL=C sort | while IFS= read -r file; do
+            sha256sum "$file"
+          done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Attach the checksums to the draft release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          # Keep the release a draft: it is published by hand after the smoke test.
+          draft: true
+          prerelease: false
+          files: artifacts/SHA256SUMS.txt
