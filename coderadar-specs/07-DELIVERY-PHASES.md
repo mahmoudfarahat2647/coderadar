@@ -14,7 +14,7 @@
 | 4 | Polar radar canvas | 4–5 d | 60 FPS with up to 150 nodes; hover/click linked to feed |
 | 5 | Jev Tier 1 + privacy layer | 4–5 d | Real Jev results match mock schema; secrets redacted |
 | 6 | Diff modal, safe patching, SQLite history | 5–6 d | Patch safety tests pass; history trend visible |
-| 7 | Hardening, packaging, release v1.0 | 4–5 d | Win/macOS/Linux builds pass smoke test ✅ |
+| 7 | Hardening, packaging, release v1.0 | 4–5 d | Engine gate verified in CI; clean-machine install on each OS is the remaining human step (draft release) |
 | 8 | Post-MVP (v1.1) | later | PR mode + Tier 2 auto-fix |
 
 **Total MVP (phases 0–7): about 31–41 focused days.**
@@ -111,7 +111,7 @@
 - [x] GitHub Actions release builds: Windows, macOS, Linux *(`.github/workflows/release.yml`: `.msi` + `.exe` (NSIS), `.dmg` ×2, `.deb` + `.AppImage`, draft release + `SHA256SUMS.txt` — CR-SPEC-15 §5)*
 - [x] README with screenshots, install steps, and known limits *(`docs/README.md`: dashboard mockup, Mermaid layer diagram, install guide, performance table, security posture, known limits — CR-SPEC-15 §6)*
 
-**Gate:** clean-machine install on each OS; full scan → fix → history works. ✅ PASS — the engine half of the gate is verified by the machine: scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks, and the `architecture`, `security` and `performance` CI jobs are green; the installers for Windows, macOS (aarch64 + x86_64) and Linux are built by `.github/workflows/release.yml` and attached, with a `SHA256SUMS.txt`, to a **draft** release, and the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1). The **clean-machine install on macOS and Linux could not be executed from a single Windows machine** — it is the remaining human action of this phase, and the draft release exists so that it can be run before the release is published *(CR-SPEC-15 §8)*.
+**Gate:** clean-machine install on each OS; full scan → fix → history works. → PARTIAL — **(1) Verified by the machine (the engine half):** scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks; the `architecture`, `security` and `performance` CI jobs are green; the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1); and the draft release carries the artefacts produced by `.github/workflows/release.yml` — Windows (`.msi` + `.exe`), macOS (aarch64 + x86_64 `.dmg`), Linux (`.deb` + `.AppImage`) and `SHA256SUMS.txt`. **(2) Still open (the human half):** the clean-machine install on each target OS, which is the human action of this gate and has not been performed on any of them — macOS and Linux cannot be executed from a single Windows machine, and a Windows clean-machine install has not been performed either. **(3) Why a draft release exists:** it holds the installers so that this clean-machine install can be run before the release is published *(CR-SPEC-15 §8)*.
 
 ## Phase 8 — Post-MVP (v1.1+)
 - Git Changeset engine and PR Hygiene scorecard (`PR-*` rules)

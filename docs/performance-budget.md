@@ -25,11 +25,16 @@ authoritative**.
 | Idle RSS `< 45 MB` | The `coderadar` CLI printing its usage line (`--help`): the process **after start-up with no scan**. | `tests/performance_budget.rs` → `the_idle_rust_core_stays_under_the_memory_budget` |
 | Peak RSS of a full scan `< 45 MB` | The `coderadar` CLI scanning a synthetic 5,000-file repository (50 directories × 100 files). | `tests/memory_budget.rs` → `five_thousand_file_scan_stays_under_the_memory_budget` |
 | Full-scan duration (**not** a budget) | The same 5,000-file repository, reported as the engine's own `scan.duration_ms` and as the wall clock. | `tests/performance_budget.rs` → `a_full_scan_of_a_large_repository_is_measured` |
+| **Desktop shell cold start and idle RSS** (recorded, **not** a CI gate) | The `coderadar-desktop` binary produced by the Tauri CLI: `bootmark=<ms>` printed on `tauri::RunEvent::Ready` (spawn → event loop up, window exists), then `PeakWorkingSet64` sampled while the app stays open with no scan. | `scripts/measure-desktop.ps1` (§2.3) |
 
 The CLI is the Rust core in its shipped form: the desktop shell (Tauri) owns
 the webview, while the engine, the rule manifest and the scanner live in
 `coderadar-infrastructure`. Measuring the CLI therefore measures the code
 path the desktop app runs, without the webview in the way.
+
+The desktop numbers are a **recorded measurement, not an enforced gate**: the
+shell is not part of the cargo workspace, so no `cargo test` target can build
+it. §2.3 states exactly what the probe does and does not cover.
 
 ### 1.2 The peak-RSS sampler
 
@@ -89,7 +94,7 @@ on an idle machine.
 * `memory_budget` (release): 3 runs.
 * `performance_budget` (debug): 3 runs.
 * `memory_budget` (debug): 2 runs.
-* Desktop app: 3 runs per build profile.
+* Desktop app: 7 runs (`scripts/measure-desktop.ps1`, release build).
 
 ---
 
@@ -117,29 +122,38 @@ budget is only meaningful for the shipped release build.
 | Peak RSS of the 5,000-file scan | 2 | 13,696 – 13,924 kB | `< 45 MB` | **PASS** |
 | Full scan of 5,000 files (engine) | 3 | 4,661 – 5,252 ms | *not budgeted* | — |
 
-### 2.3 Desktop app (extra, see §5)
+### 2.3 Desktop application (recorded, not a CI gate)
 
-Measured on the same machine from `coderadar-desktop` (Tauri shell), window
-up = time until the OS main-window handle exists; idle peak working set =
-`PeakWorkingSet64` sampled for 8 s after the window appeared, with no scan
-running.
+Measured with `scripts/measure-desktop.ps1` against the binary produced by
+`npx tauri build --no-bundle` (release). The probe is compiled into the shell
+and is inert unless `CODERADAR_BOOTMARK` is set; it prints `bootmark=<ms>` on
+`tauri::RunEvent::Ready` — the event loop is up and the window exists, which
+is *before* the webview paints its first frame.
 
-| Build profile | Samples | Window up | Idle peak working set | Budget | Verdict |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| release | 3 | 40 – 85 ms | 22,828 – 23,468 kB (22.3 – 22.9 MB) | `< 45 MB` | **PASS** |
-| debug | 3 | 40 – 54 ms | 28,644 – 28,832 kB (28.0 – 28.2 MB) | `< 45 MB` | **PASS** |
+| Measurement | Samples | Observed | Budget | Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| Cold start (`bootmark`, spawn → event loop ready) | 7 | 395, 431, 438, 442, 442, 470, 478 ms — median 442 ms | `< 1,200 ms` | **PASS** |
+| Idle peak working set (shell, no scan) | 1 × 5 s hold | 26.1 MB | `< 45 MB` | **PASS** |
 
 The WebView2 renderer runs in its own process (`msedgewebview2.exe`,
 ≈ 99 MB working set). Per NFR-01 it is *"isolated and bounded by the OS
 webview runtime"* and is therefore **outside** the 45 MB budget, which
 applies to the Rust core backend only.
 
+> **Correction.** The first cut of this phase recorded 40–85 ms and
+> 22.3–22.9 MB here. Those numbers came from a binary built with a bare
+> `cargo build --release`, which builds the application in its *development*
+> configuration: it loads `devUrl` (`http://localhost:5173`) instead of the
+> bundled assets, so the window came up on a "can't reach this page" error and
+> the numbers measured a shell that never loaded the product. The probe above
+> measures the real bundle; the build command matters and is repeated in §3.
+
 ### 2.4 Budget summary
 
 | Budget (NFR-01) | Target | Best observed | Worst observed | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| Desktop app / Rust core cold start | `< 1,200 ms` | 40 ms (desktop, release) | 108 ms (CLI, release) | **PASS** |
-| Rust core backend RSS, idle | `< 45 MB` | 4.4 MB (CLI, release) | 28.2 MB (desktop, debug) | **PASS** |
+| Cold start | `< 1,200 ms` | 75 ms (CLI, release) | 478 ms (desktop shell, release) | **PASS** |
+| Rust core backend RSS, idle | `< 45 MB` | 4.4 MB (CLI, release) | 26.1 MB (desktop shell, release) | **PASS** |
 
 ---
 
@@ -164,14 +178,16 @@ cold start: 108 ms (budget 1200 ms)
 idle peak RSS: 4604 kB (budget 46080 kB)
 ```
 
-The desktop app is measured manually (it is not part of the workspace, so
-cargo cannot build it for the test):
+The desktop app is measured by `scripts/measure-desktop.ps1` (it is not part of
+the workspace, so cargo cannot build it for the test). Build the shipped
+configuration — **not** `cargo build --release`, which produces a development
+build that loads `devUrl` — and run the probe:
 
-```bash
+```powershell
 npm run build
-cargo build --manifest-path src-tauri/Cargo.toml --release
-# then start `src-tauri/target/release/coderadar-desktop.exe` and sample
-# `Get-Process -Id <pid> | Select-Object -ExpandProperty PeakWorkingSet64`
+npx tauri build --no-bundle
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-desktop.ps1 `
+  -ExePath src-tauri\target\release\coderadar-desktop.exe -Runs 7 -IdleMs 5000
 ```
 
 ---
@@ -182,9 +198,9 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
    process start → report produced. The desktop app additionally starts a
    Tauri runtime and a WebView2 instance; the webview start-up is dominated
    by the OS webview runtime (process spawn, GPU/renderer initialisation) and
-   is **not** covered by this harness. The desktop row in §2.3 measures the
-   time until the OS window handle exists, which is *before* the webview has
-   painted the first frame.
+   is **not** covered by this harness. The desktop row in §2.3 measures
+   spawn → `RunEvent::Ready` (the event loop is up and the window exists),
+   which is still *before* the webview has painted the first frame.
 2. **The 45 MB budget applies to the Rust core backend only.** The webview
    renderer is a separate process bounded by the OS webview runtime, as
    stated in NFR-01. Its ≈ 99 MB working set is not a violation of the
@@ -218,6 +234,15 @@ cargo build --manifest-path src-tauri/Cargo.toml --release
    `performance` runs the same suite on `ubuntu-latest` in release mode; the
    macOS and Linux numbers of the shipped build are not recorded in this
    document, because no macOS machine was available for this measurement.
+9. **The desktop probe is not a CI gate.** The shell is outside the cargo
+   workspace, so no test target can build it. §2.3 is a recorded measurement
+   taken by `scripts/measure-desktop.ps1`; the CI-enforced budgets are the
+   Rust-core ones.
+10. **A bare `cargo build --release` is not the shipped binary.** Without the
+    Tauri CLI the application is compiled in its development configuration
+    and loads `devUrl` instead of the bundled assets, so a number measured
+    from it says nothing about NFR-01. Build with `npx tauri build
+    --no-bundle` (or the full `tauri build`) before measuring.
 
 ---
 
@@ -244,7 +269,8 @@ application now starts again (verified on Windows: the process stays alive and
 the window is created). The defect and its fix are recorded as `D-1` in
 [`coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md`](../coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md).
 
-The numbers of §2.3 were measured before the fix, from a **scratch copy** of
-the crate (outside the repository, with the `plugins` block removed from the
-copied `tauri.conf.json`); no file of the repository was modified for that
-measurement.
+The numbers of §2.3 are measured **after** the fix, from the real release
+bundle built by the Tauri CLI, with the `CODERADAR_BOOTMARK` probe and
+`scripts/measure-desktop.ps1`. They supersede the earlier scratch-copy
+measurement, which was taken from a development build and is not reproducible
+from the repository.

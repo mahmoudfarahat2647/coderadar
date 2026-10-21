@@ -32,6 +32,14 @@ so the manifest you scan against is the manifest that was tested.
 metrics ribbon on top, the 360° polar radar on the left, the findings feed on
 the right.*
 
+![The shipped CodeRadar Studio desktop application on Windows](img/dashboard.png)
+
+*The shipped application, captured from the v1.0.0 release build
+(`npx tauri build --no-bundle`) on Windows. This is a real window, not a
+mockup. The capture was taken at 125 % display scaling, i.e. a ~1536 CSS px
+viewport; see [Known limits](#known-limits) for the layout behaviour at that
+width.*
+
 ---
 
 ## Feature tour
@@ -160,6 +168,41 @@ The rule is enforced twice, and both checks fail the build:
   `coderadar-usecases`).
 * `crates/coderadar-infrastructure/tests/architecture_boundaries.rs` — the
   cross-platform Rust twin of the same rules.
+
+The Markdown export is the one write path that deliberately leaves the
+workspace: the target is whatever file the user picked, so it is outside any
+workspace root and is not a patch. It crosses the layers like this:
+
+```mermaid
+flowchart LR
+    subgraph entry["Entry points"]
+        button["Desktop Export button"]
+        cli["CLI: coderadar report path --out file"]
+    end
+    subgraph shell["Layer 4 - Shell"]
+        command["Tauri command<br/>export_report"]
+        bin["coderadar bin<br/>report subcommand"]
+    end
+    subgraph infra["Layer 4 - Infrastructure"]
+        export["export.rs<br/>write_markdown_report"]
+        atomic["patching.rs::atomic_write<br/>staging file + rename"]
+    end
+    subgraph adapters["Layer 3 - Interface Adapters"]
+        renderer["report_markdown.rs<br/>render_markdown_report"]
+    end
+    target["report.md<br/>user-chosen path"]
+    guard["WorkspaceGuard<br/>patch writes only"]
+
+    button --> command
+    cli --> bin
+    command --> export
+    bin --> export
+    export -->|render input| renderer
+    renderer -->|Markdown document| export
+    export --> atomic
+    atomic --> target
+    guard -.->|"guards patch writes into a workspace;<br/>not the user-chosen export target"| atomic
+```
 
 The blueprint is described in
 [`coderadar-specs/02-CLEAN-ARCHITECTURE-BLUEPRINT.md`](../coderadar-specs/02-CLEAN-ARCHITECTURE-BLUEPRINT.md).
@@ -334,13 +377,13 @@ full method, the sample counts and the limits of the measurement are in
 | Measurement | Observed | Budget | Verdict |
 | :--- | :--- | :--- | :--- |
 | CLI cold start (process start → report) | 75–108 ms | < 1 200 ms | PASS |
-| Desktop window up | 40–85 ms | < 1 200 ms | PASS |
+| Desktop cold start (spawn → event loop ready) | 395–478 ms (median 442) | < 1 200 ms | PASS |
 | Idle peak RSS (Rust core, CLI) | 4.4–4.5 MB | < 45 MB | PASS |
-| Idle peak RSS (desktop shell, release) | 22.3–22.9 MB | < 45 MB | PASS |
+| Idle peak RSS (desktop shell, release) | 26.1 MB | < 45 MB | PASS |
 | Peak RSS of a 5 000-file scan | 10.3–10.6 MB | < 45 MB | PASS |
 | Full scan of 5 000 files | 1.2–1.6 s (engine) | not budgeted | — |
 
-The gates are automated:
+The Rust-core gates are automated and run in CI:
 
 ```bash
 cargo test --release -p coderadar-infrastructure --test performance_budget --test memory_budget
@@ -349,6 +392,13 @@ cargo test --release -p coderadar-infrastructure --test performance_budget --tes
 `tests/performance_budget.rs` covers the cold start and the idle RSS;
 `tests/memory_budget.rs` covers the peak RSS of a 5 000-file scan. Both run in
 release mode in the CI job `performance`.
+
+The two desktop rows are **recorded, not enforced**: the shell is outside the
+cargo workspace, so it is measured by a script against the release bundle
+(`npx tauri build --no-bundle`, then `scripts/measure-desktop.ps1`). A bare
+`cargo build --release` produces a *development* build that loads the dev
+server instead of the bundled assets, and any number taken from it is
+meaningless.
 
 ---
 
@@ -396,6 +446,12 @@ the shipped scope.
 * **`style-src` still needs `'unsafe-inline'`**, because the radar overlay
   positions its nodes with React inline styles. `script-src` is strict:
   `'self'` only, no `unsafe-inline`, no `unsafe-eval`.
+* **The scan bar overflows below ≈ 1600 CSS px.** On a 1920×1080 display at
+  125 % scaling (a ~1536 CSS px viewport) the right-hand side of the scan bar
+  — the mode toggle and the *Run Radar Scan* button — is clipped by the
+  window edge, because the layout's minimum content width is larger than the
+  viewport. Workaround: use 100 % display scaling (or a wider window) until
+  the header is made responsive.
 * **The webview renderer is a separate process** (≈ 99 MB working set on
   Windows) bounded by the OS webview runtime. The 45 MB budget covers the
   Rust core only.

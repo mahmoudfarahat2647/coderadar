@@ -1,7 +1,7 @@
 # CodeRadar Studio: Phase 7 - Hardening, Packaging & Release v1.0
 
 > **Document ID:** `CR-SPEC-15`
-> **Status:** Shipped - implemented, gated and verified (see §8)
+> **Status:** Implemented and verified by the machine; release drafted - the clean-machine install smoke test is the open human step (see §8)
 > **Version:** 1.0.0
 > **Milestone:** [Phase 7 - Hardening, packaging, release](https://github.com/mahmoudfarahat2647/coderadar/milestone/8)
 > **Closes task line:** Phase 7 checklist of [`PHASES.md`](../PHASES.md) and [`07-DELIVERY-PHASES.md`](./07-DELIVERY-PHASES.md)
@@ -145,11 +145,19 @@ i5-10310U @ 1.70 GHz, 16 GB RAM.
 | Measurement | Samples | Observed | Budget | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
 | CLI cold start (process start → report) | 5 | 75–108 ms | < 1 200 ms | **PASS** |
-| Desktop window up | 3 | 40–85 ms | < 1 200 ms | **PASS** |
+| Desktop cold start (spawn → `RunEvent::Ready`) | 7 | 395–478 ms, median 442 ms | < 1 200 ms | **PASS** |
 | Idle peak RSS (Rust core, CLI) | 5 | 4.4–4.5 MB | < 45 MB | **PASS** |
-| Idle peak RSS (desktop shell, release) | 3 | 22.3–22.9 MB | < 45 MB | **PASS** |
+| Idle peak RSS (desktop shell, release) | 1 × 5 s hold | 26.1 MB | < 45 MB | **PASS** |
 | Peak RSS of a 5 000-file scan | 3 | 10.3–10.6 MB | < 45 MB | **PASS** |
 | Full scan of 5 000 files (engine) | 5 | 1.2–1.6 s | *not budgeted* | — |
+
+The desktop rows are **recorded, not enforced**: the shell is outside the
+cargo workspace. A `CODERADAR_BOOTMARK` probe compiled into the shell prints
+`bootmark=<ms>` on `tauri::RunEvent::Ready`, and `scripts/measure-desktop.ps1`
+samples it plus the idle working set against the bundle produced by
+`npx tauri build --no-bundle`. A bare `cargo build --release` builds the
+development configuration (it loads `devUrl`, not the bundled assets) and
+must not be used for this measurement — see D-7.
 
 ### 3.3 The gates
 
@@ -270,6 +278,8 @@ skills; it is not a product README and was not rewritten. It only points to
 | D-4 | `tests/memory_budget.rs` was `#![cfg(target_os = "linux")]`: it silently compiled to nothing on Windows and macOS, so the 45 MB budget was only ever measured in CI. | Medium | The sampler became cross-platform and the gate runs on every platform (§3.3). |
 | D-5 | There was no cold-start measurement at all: the `NFR-01` budget of 1 200 ms was a claim, not a number. | Medium | `tests/performance_budget.rs` measures it, the CI job `performance` runs it, and `docs/performance-budget.md` records the numbers and the method. |
 | D-6 | `NFR-05` was a *document*, not a *gate*: nothing failed when the CSP was loosened or a `fs:` permission was added to the Tauri ACL. | Medium | `scripts/check-security.sh` and `security_posture.rs` enforce seven invariants (§4). |
+| D-7 | The first desktop performance numbers (40–85 ms cold start, 22.3–22.9 MB idle) were measured from a binary built with a bare `cargo build --release`. Tauri builds that way are in their *development* configuration: they load `devUrl` instead of the bundled assets, so the window shows a "can't reach this page" error and the numbers described a shell that never loaded the product. | High | A `CODERADAR_BOOTMARK` probe (inert unless set) prints spawn → `RunEvent::Ready`, `scripts/measure-desktop.ps1` measures the real bundle built by `npx tauri build --no-bundle`, and §3.2 records the fresh numbers plus the reason the old ones were invalid. |
+| D-8 | At 125 % display scaling (a ~1536 CSS px viewport) the scan bar overflows: the mode toggle and the *Run Radar Scan* button are clipped by the window edge, because the layout's minimum content width is larger than the viewport. | Medium | Not fixed in this phase — recorded in `docs/README.md` under *Known limits* with the workaround (100 % scaling or a wider window); the responsive fix is Phase 8 work. |
 
 ## 8. The verification gate
 
@@ -292,13 +302,13 @@ explicitly below rather than glossed over.
 
 | Part of the gate | Why it cannot be verified here | What is done instead |
 | :--- | :--- | :--- |
-| **Clean-machine install on macOS and Linux** | A clean-machine install can only be executed on the target operating system; this phase was carried out on a single Windows machine, and no macOS or Linux machine was available. | The release workflow produces the artefacts for all three operating systems and attaches them to a **draft** release precisely so that a human can run the clean-machine smoke test (install → launch → scan → fix → history) on macOS and Linux before the release is published. The draft is the safeguard, not a claim. |
+| **Clean-machine install on each target OS** | A clean-machine install can only be executed on the target operating system; this phase was carried out on a single Windows machine, and no macOS or Linux machine was available (and no clean Windows machine either). | The release workflow produces the artefacts for all three operating systems and attaches them to a **draft** release precisely so that a human can run the clean-machine smoke test (install → launch → scan → fix → history) on each OS before the release is published. The draft is the safeguard, not a claim. |
 | **The macOS and Linux performance numbers of the shipped build** | No measuring machine was available for those two operating systems. | The CI job `performance` runs the same suite on `ubuntu-latest` in release mode; `docs/performance-budget.md` records the Windows reference numbers and states explicitly that the macOS and Linux numbers of the shipped build are not recorded. |
 | **Code signing and notarisation** | Not configured in this phase; it needs certificates and a vendor account. | The installers are unsigned; this is listed as a known limit in `docs/README.md`. |
 
 ### 8.3 The gate sentence
 
-> **Gate:** clean-machine install on each OS; full scan → fix → history works. ✅ PASS — the engine half of the gate is verified by the machine: scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks, and the `architecture`, `security` and `performance` CI jobs are green; the installers for Windows, macOS (aarch64 + x86_64) and Linux are built by `.github/workflows/release.yml` and attached, with a `SHA256SUMS.txt`, to a **draft** release, and the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1). The **clean-machine install on macOS and Linux could not be executed from a single Windows machine** — it is the remaining human action of this phase, and the draft release exists so that it can be run before the release is published *(CR-SPEC-15 §8)*.
+> **Gate:** clean-machine install on each OS; full scan → fix → history works. → **PARTIAL** — **(1) Verified by the machine (the engine half):** scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks, and the `architecture`, `security` and `performance` CI jobs are green; the installers for Windows, macOS (aarch64 + x86_64) and Linux are built by `.github/workflows/release.yml` and attached, with a `SHA256SUMS.txt`, to a **draft** release, and the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1). **(2) Still open (the human half):** the clean-machine install has not been performed on **any** target OS — macOS and Linux cannot be executed from a single Windows machine, and a Windows clean-machine install was not performed either. **(3) Why a draft release exists:** it holds the installers so that this smoke test can be run before the release is published *(CR-SPEC-15 §8)*.
 
 ## 9. Non-goals
 

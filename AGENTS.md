@@ -11,6 +11,7 @@
 - Architecture guard: `bash scripts/check-architecture.sh` (needs Git Bash/WSL on Windows; the same rules are re-checked by `crates/coderadar-infrastructure/tests/architecture_boundaries.rs`)
 - Security guard (NFR-05): `bash scripts/check-security.sh` (needs Git Bash/WSL on Windows; the same rules are re-checked by `crates/coderadar-infrastructure/tests/security_posture.rs`)
 - Performance gate (NFR-01): `cargo test --release -p coderadar-infrastructure --test performance_budget --test memory_budget`
+- Desktop perf (recorded, not a gate): `npm run build && npx tauri build --no-bundle`, then `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/measure-desktop.ps1 -ExePath src-tauri\target\release\coderadar-desktop.exe -Runs 7 -IdleMs 5000`. A bare `cargo build --release` on `src-tauri` produces a **development** build that loads `devUrl` (a localhost error page), so never measure from it.
 - MSRV gate: `cargo +1.82.0 check --workspace --exclude coderadar-desktop --all-targets`
 - CLI: `cargo run -p coderadar-infrastructure --bin coderadar -- scan <path> [--pretty]` (JSON on stdout; exit 0 = ok, 1 = runtime error, 2 = usage error)
 - CLI Markdown export (FR-07): `coderadar scan <path> --markdown` prints the report on stdout; `coderadar report <path> [--out <file>]` writes it (default file name `report.md`)
@@ -44,7 +45,13 @@
 - `src-tauri/tauri.conf.json` must **not** carry a `plugins.dialog` entry: since `tauri-plugin-dialog` 2.8 the plugin has no configuration (its config type became a unit), and the entry makes Tauri panic during initialisation — the desktop app then never starts. The dialog needs no configuration at all.
 - The desktop crate is excluded from the MSRV gate (`cargo +1.82.0 check --workspace --exclude coderadar-desktop`); the workspace crates are the ones pinned to 1.82.
 
+## Deliberate design calls (do not "fix")
+- The CLI has two export surfaces on purpose: `coderadar scan <path> --markdown` prints to stdout, `coderadar report <path> [--out <file>]` writes a file. `--out` in scan mode is a usage error (exit 2), never a silently ignored flag.
+- `tests/common/rss.rs` keeps one loop per OS (`VmHWM` / `ps` / `PeakWorkingSet64`) instead of a unifying abstraction: the branches differ in the data source, not only in the command.
+- Scan-history rows are read with a small hand-rolled JSON reader to keep the SQLite layer dependency-light; do not swap it for serde without re-reading the dependency rule.
+- `Severity` / `Category` cross the CLI boundary as strings (DTO), not as domain enums — the wire format is the outer layer's convenience.
+
 ## Workflow
-- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phases 0–7 are complete (the Phase 7 evidence is in `coderadar-specs/15-PHASE-7-HARDENING-PACKAGING-RELEASE.md`); Phase 8 (post-MVP: PR mode + Tier 2 auto-fix) is next.
+- Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phase 7's engine half is verified in CI; the clean-machine install on each OS is the open human step (the draft release holds the installers). Phase 8 (post-MVP: PR mode + Tier 2 auto-fix) is next.
 - Code, comments, and commit messages are English; `README.md` is Arabic — keep it Arabic when editing. `coderadar-specs/*.md` are written in English (the Phase 0-5 documents) — follow the language of the document you edit.
 - Code comments cite spec sections (`CR-SPEC-02 §3`); before changing architecture or domain rules, read the matching `coderadar-specs/` document.
