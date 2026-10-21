@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "coderadar-adapters"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "coderadar-domain",
  "coderadar-usecases",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "coderadar-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "coderadar-adapters",
  "coderadar-domain",
@@ -393,11 +393,11 @@ dependencies = [
 
 [[package]]
 name = "coderadar-domain"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "coderadar-infrastructure"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "coderadar-adapters",
  "coderadar-domain",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "coderadar-usecases"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "coderadar-domain",
 ]
