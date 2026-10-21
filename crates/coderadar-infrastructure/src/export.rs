@@ -10,9 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use coderadar_adapters::{
-    render_markdown_report, MarkdownFinding, MarkdownReport, MarkdownReportInput,
-};
+use coderadar_adapters::{render_markdown_report, MarkdownFinding, MarkdownReportInput};
 use coderadar_domain::DomainError;
 
 use crate::patching::atomic_write;
@@ -50,7 +48,7 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
         ast_chunks: report.scan.ast_chunks,
         module_chunks: report.scan.module_chunks,
         duration_ms: report.scan.duration_ms,
-        compliance_percent: compliance_percent(report),
+        compliance_percent: report.scan.compliance_percent,
         findings: report
             .findings
             .iter()
@@ -73,16 +71,6 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
     render_markdown_report(&input).markdown
 }
 
-/// Render the Markdown report of a finished scan, with its statistics.
-pub fn markdown_report_from_report(report: &ScanReport) -> MarkdownReport {
-    let markdown = markdown_from_report(report);
-    MarkdownReport {
-        byte_len: markdown.len(),
-        finding_count: report.findings.len(),
-        markdown,
-    }
-}
-
 /// Write the Markdown report of a scan to `path`.
 ///
 /// The write is atomic: the document is staged next to the target and then
@@ -103,7 +91,7 @@ pub fn write_markdown_report(
 ///
 /// # Errors
 /// Returns [`DomainError::Io`] when the document cannot be written.
-pub fn write_markdown_text(
+fn write_markdown_text(
     path: &Path,
     markdown: &str,
     findings: usize,
@@ -137,29 +125,9 @@ fn absolute_display(path: &Path) -> String {
     absolute.to_string_lossy().replace('\\', "/")
 }
 
-/// Compliance score of a scan report, 0-100.
-///
-/// A file *passes* when it carries no finding at all; the score is the share of
-/// passing files among the analysed files.
-fn compliance_percent(report: &ScanReport) -> u8 {
-    if report.scan.files_scanned == 0 {
-        return 100;
-    }
-    let mut failing: Vec<&str> = report
-        .findings
-        .iter()
-        .map(|finding| finding.file.as_str())
-        .collect();
-    failing.sort_unstable();
-    failing.dedup();
-    let failing = failing.len().min(report.scan.files_scanned);
-    let passing = report.scan.files_scanned - failing;
-    ((passing * 100 + report.scan.files_scanned / 2) / report.scan.files_scanned) as u8
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{compliance_percent, markdown_from_report, write_markdown_report};
+    use super::{markdown_from_report, write_markdown_report};
     use crate::layer_map::LayerMapSource;
     use crate::pipeline::ScanOutcome;
     use crate::report::ScanReport;
@@ -167,7 +135,8 @@ mod tests {
     use coderadar_domain::{Finding, FindingCategory, RiskScore, ScanMode, ScanSession, Severity};
 
     fn report_with_two_findings() -> ScanReport {
-        let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000);
+        let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
+            .with_files_scanned(4);
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -200,25 +169,18 @@ mod tests {
 
     #[test]
     fn the_markdown_contains_the_summary_and_the_findings() {
-        let markdown = markdown_from_report(&report_with_two_findings());
+        let report = report_with_two_findings();
+        assert_eq!(report.scan.compliance_percent, 50);
+        let markdown = markdown_from_report(&report);
         assert!(markdown.contains("## Executive summary"));
         assert!(markdown.contains("| Findings | 2 |"));
-        assert!(markdown.contains("| Compliance | 50 % |"));
+        assert!(markdown.contains(&format!(
+            "| Compliance | {} % |",
+            report.scan.compliance_percent
+        )));
         assert!(markdown.contains("SEC-TOK-002"));
         assert!(markdown.contains("ARCH-DEP-001"));
         assert!(markdown.contains("CWE-798"));
-    }
-
-    #[test]
-    fn the_compliance_score_counts_the_failing_files() {
-        assert_eq!(compliance_percent(&report_with_two_findings()), 50);
-    }
-
-    #[test]
-    fn a_scan_without_files_is_fully_compliant() {
-        let mut report = report_with_two_findings();
-        report.scan.files_scanned = 0;
-        assert_eq!(compliance_percent(&report), 100);
     }
 
     #[test]

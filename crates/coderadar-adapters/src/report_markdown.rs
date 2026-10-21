@@ -9,6 +9,8 @@
 //! [`MarkdownReportInput`], the renderer returns a deterministic document — the
 //! same scan always produces byte-identical Markdown.
 
+use coderadar_domain::FindingCategory;
+
 /// One finding, as it appears in the report.
 ///
 /// This is a boundary DTO: inner entities are never rendered directly
@@ -89,13 +91,22 @@ pub struct MarkdownReport {
 const SEVERITIES: [&str; 4] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
 /// Pillars, in the canonical order of the radar quadrants.
-const PILLARS: [(&str, &str, u32); 5] = [
-    ("architecture", "Clean Architecture & SOLID", 45),
-    ("security", "Security & Compliance", 135),
-    ("edge_cases", "Edge Cases & Robustness", 315),
-    ("performance", "Performance & Resource Leaks", 225),
-    ("pull_requests", "Pull Request & Diff Hygiene", 0),
-];
+fn pillars() -> [(&'static str, &'static str, u32); 5] {
+    [
+        FindingCategory::CleanArchitecture,
+        FindingCategory::Security,
+        FindingCategory::EdgeCases,
+        FindingCategory::Performance,
+        FindingCategory::PullRequests,
+    ]
+    .map(|category| {
+        (
+            category.as_str(),
+            category.pillar_name(),
+            category.radar_base_angle_deg() as u32,
+        )
+    })
+}
 
 /// Severity badge used in the summary table.
 fn severity_badge(severity: &str) -> &'static str {
@@ -154,10 +165,10 @@ fn sorted_findings(findings: &[MarkdownFinding]) -> Vec<MarkdownFinding> {
 
 /// Rank of a pillar token; lower comes first in the report.
 fn pillar_rank(category: &str) -> usize {
-    PILLARS
+    pillars()
         .iter()
         .position(|(token, _, _)| *token == category)
-        .unwrap_or(PILLARS.len())
+        .unwrap_or(pillars().len())
 }
 
 /// Render the title block and the scan identity.
@@ -238,7 +249,7 @@ fn render_radar_metrics(out: &mut String, findings: &[MarkdownFinding]) {
     );
     out.push_str("| Pillar | Quadrant | Findings | Mean risk | Max risk |\n");
     out.push_str("|---|---:|---:|---:|---:|\n");
-    for (token, pillar, angle) in PILLARS {
+    for (token, pillar, angle) in pillars() {
         let scoped: Vec<&MarkdownFinding> = findings
             .iter()
             .filter(|finding| finding.category == token)
@@ -271,7 +282,7 @@ fn render_findings(out: &mut String, findings: &[MarkdownFinding]) {
         return;
     }
 
-    for (token, pillar, _) in PILLARS {
+    for (token, pillar, _) in pillars() {
         let scoped: Vec<&MarkdownFinding> = findings
             .iter()
             .filter(|finding| finding.category == token)
