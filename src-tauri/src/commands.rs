@@ -8,9 +8,10 @@ use coderadar_adapters::{
     unified_diff, HistoryPointDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
 };
 use coderadar_infrastructure::{
-    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history, CredentialStore,
-    EngineStatusSnapshot, FindingBatch, JevConfig, KeyringCredentialStore, RuleManifest,
-    SafePatchApplier, ScanReport, SemanticEngine, SqliteScanHistoryRepository, TIER0_OWNED_IDS,
+    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history,
+    write_markdown_report, CredentialStore, EngineStatusSnapshot, FindingBatch, JevConfig,
+    KeyringCredentialStore, RuleManifest, SafePatchApplier, ScanReport, SemanticEngine,
+    SqliteScanHistoryRepository, TIER0_OWNED_IDS,
 };
 use coderadar_usecases::{PatchApplier, PreparePatch, ScanHistoryRepository, SourceFileReader};
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,9 @@ pub struct AppState {
     engine: RwLock<SemanticEngine>,
     credentials: KeyringCredentialStore,
     history: Arc<HistoryHandle>,
+    /// The report of the last finished scan, kept so the UI can export it as a
+    /// Markdown document. It is `None` until the first scan succeeds.
+    last_report: RwLock<Option<ScanReport>>,
 }
 
 impl AppState {
@@ -102,6 +106,7 @@ impl AppState {
             engine: RwLock::new(SemanticEngine::from_environment()),
             credentials: KeyringCredentialStore::new(),
             history,
+            last_report: RwLock::new(None),
         }
     }
 }
@@ -242,6 +247,15 @@ pub async fn start_scan(
 
     match scan_result {
         Ok(report) => {
+            // Keep the finished report so the UI can export it as Markdown.
+            let state = app.state::<AppState>();
+            let mut last_report = state
+                .last_report
+                .write()
+                .map_err(|_| "Engine state lock poisoned".to_string())?;
+            *last_report = Some(report.clone());
+            drop(last_report);
+
             let _ = app.emit("coderadar://scan-complete", &report);
             Ok(report)
         }
@@ -482,4 +496,49 @@ pub async fn get_scan_history(
     })
     .await
     .map_err(|error| format!("History task join error: {error}"))?
+}
+
+/// The outcome of a Markdown report export (`FR-07`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportOutcomeDTO {
+    /// Absolute path of the written report.
+    pub path: String,
+    /// Size of the report in bytes.
+    pub bytes: usize,
+    /// Number of findings the report describes.
+    pub findings: usize,
+}
+
+/// Export the last scan as a Markdown report at `target_path`.
+///
+/// The report is the one of the last finished scan; the write is atomic, so
+/// the target file is never observed half written (`CR-SPEC-13 §4`).
+#[tauri::command]
+pub async fn export_report(
+    state: tauri::State<'_, AppState>,
+    target_path: String,
+) -> Result<ExportOutcomeDTO, String> {
+    // The report is copied out of the state before the blocking write: the
+    // lock must never be held across an await point.
+    let report = {
+        let last_report = state
+            .last_report
+            .read()
+            .map_err(|_| "Engine state lock poisoned".to_string())?;
+        last_report.clone().ok_or_else(|| {
+            "No scan has been run yet: run a scan before exporting a report.".to_string()
+        })?
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let outcome = write_markdown_report(Path::new(&target_path), &report)
+            .map_err(|error| format!("The report cannot be written: {error}"))?;
+        Ok(ExportOutcomeDTO {
+            path: outcome.path,
+            bytes: outcome.bytes,
+            findings: outcome.findings,
+        })
+    })
+    .await
+    .map_err(|error| format!("Report export task join error: {error}"))?
 }

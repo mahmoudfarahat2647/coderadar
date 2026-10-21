@@ -1,5 +1,13 @@
 import React from "react";
-import { Radar, ShieldAlert, Cpu, GitPullRequest, ExternalLink, Activity } from "lucide-react";
+import {
+  Radar,
+  ShieldAlert,
+  Cpu,
+  GitPullRequest,
+  ExternalLink,
+  Activity,
+  FileDown,
+} from "lucide-react";
 import { EngineStatus } from "../types";
 import { engineTone } from "../utils/engineTone";
 
@@ -7,12 +15,22 @@ interface HeaderProps {
   engineStatus: EngineStatus | null;
   activeTab: string;
   onTabChange: (tab: string) => void;
+  /**
+   * Phase 7 — Export the current scan as a Markdown report.
+   */
+  onExportReport?: () => void;
+  /**
+   * Phase 7 — The export button is disabled while a scan is running.
+   */
+  exportDisabled?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   engineStatus,
   activeTab,
   onTabChange,
+  onExportReport,
+  exportDisabled = false,
 }) => {
   return (
     <header className="h-14 border-b border-border-subtle bg-surface-panel/95 backdrop-blur px-4 flex items-center justify-between select-none z-20">
@@ -120,6 +138,16 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-text-muted">{engineStatus.ruleset_version}</span>
           </div>
         )}
+
+        <button
+          onClick={() => onExportReport?.()}
+          disabled={exportDisabled}
+          className="p-1.5 text-text-muted hover:text-text-primary hover:bg-surface-elevated rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted"
+          title="Export the current scan as a Markdown report (Phase 7)"
+          aria-label="Export the current scan as a Markdown report"
+        >
+          <FileDown className="w-4 h-4" />
+        </button>
 
         <a
           href="https://github.com/mahmoudfarahat2647/coderadar"

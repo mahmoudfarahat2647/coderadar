@@ -6,6 +6,7 @@
 
 import {
   EngineStatus,
+  ExportOutcomeDTO,
   FindingBatch,
   HistoryPointDTO,
   PatchOutcomeDTO,
@@ -230,4 +231,47 @@ export async function getScanHistory(
     }
   }
   return [];
+}
+
+/**
+ * Phase 7 — Write the report of the last scan as a Markdown document.
+ *
+ * Mutating: returns `null` in the browser preview where the Rust engine is
+ * absent. A rejected export propagates its error so the UI can show it.
+ */
+export async function exportReport(
+  targetPath: string
+): Promise<ExportOutcomeDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      return await invoke<ExportOutcomeDTO>("export_report", { targetPath });
+    } catch (e) {
+      console.warn("Failed to export the Markdown report via Tauri:", e);
+      throw e;
+    }
+  }
+  return null;
+}
+
+/**
+ * Phase 7 — Ask the OS where the Markdown report should be written.
+ *
+ * Returns `null` when the user cancels the dialog, and in a plain browser
+ * where no native dialog is available.
+ */
+export async function pickReportPath(): Promise<string | null> {
+  if (isTauriEnvironment()) {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      return await save({
+        defaultPath: "report.md",
+        title: "Export the scan report",
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+    } catch (err) {
+      console.warn("Failed to open the native save dialog via Tauri:", err);
+    }
+  }
+  return null;
 }

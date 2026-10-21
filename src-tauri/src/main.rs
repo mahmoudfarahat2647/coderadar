@@ -16,7 +16,8 @@ fn main() {
             commands::get_default_scan_path,
             commands::preview_patch,
             commands::apply_patch,
-            commands::get_scan_history
+            commands::get_scan_history,
+            commands::export_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
