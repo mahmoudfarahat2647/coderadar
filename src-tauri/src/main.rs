@@ -4,7 +4,13 @@
 mod commands;
 
 fn main() {
-    tauri::Builder::default()
+    let probe_start = std::time::Instant::now();
+    let bootmark = matches!(std::env::var("CODERADAR_BOOTMARK"), Ok(value) if !value.is_empty());
+    let idle_ms = std::env::var("CODERADAR_IDLE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::AppState::new())
         .invoke_handler(tauri::generate_handler![
@@ -19,6 +25,21 @@ fn main() {
             commands::get_scan_history,
             commands::export_report
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::Ready = event {
+            if bootmark {
+                eprintln!("bootmark={}", probe_start.elapsed().as_millis());
+            }
+            if let Some(idle_ms) = idle_ms {
+                let app_handle = app_handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(idle_ms));
+                    app_handle.exit(0);
+                });
+            }
+        }
+    });
 }
