@@ -53,15 +53,23 @@ parsing; the use case owns the safety validation and the proposal shape.
 
 | Rule | Fires when |
 |---|---|
-| `PR-SCP-001` | more than 400 changed lines **and** more than one top-level area touched |
+| `PR-SCP-001` | more than 500 changed lines **and** more than one top-level area touched |
 | `PR-BRK-002` | a removed public signature is detected |
-| `PR-TST-003` | production code changed and no test file changed |
+| `PR-TST-003` | production code changed with at least one added line and no test file changed |
 
 Only rules present in the active manifest are emitted, so a ruleset can disable
 a PR rule without a code change. Findings are ordinary findings
 (`category = "pull_requests"`); the scan report additionally carries
 `pr_hygiene` (omitted for full scans) with the metrics used by the UI
-scorecard.
+scorecard. Two deliberate calls worth remembering:
+
+* `PR-TST-003` fires only when the production changes add at least one line
+  (`additions() > 0`): a deletions-only refactor is assumed not to need new
+  tests.
+* The scorecard flags (`scope_creep`, `breaking_change`, `missing_tests`) are
+  computed from the changeset before manifest filtering, so a ruleset that
+  *disables* a `PR-*` rule removes its finding but not its scorecard flag —
+  the HUD deliberately surfaces the raw metrics.
 
 `staged_diff` scans only staged text files: deleted, hidden, ignored, missing
 and workspace-escaping paths are skipped; the scanner still canonicalises the
@@ -75,7 +83,7 @@ previously deferred toggle; the CLI exposes `--staged`.
 `GenerateFix::generate(root, finding)`:
 
 1. reads the file through `SourceFileReader` (workspace guard applies);
-2. rejects an empty file (`MAX_INPUT_BYTES = 256 KiB`);
+2. rejects an empty or oversized (`MAX_INPUT_BYTES = 256 KiB`) file;
 3. asks the provider for a draft (`<name>`, `<explanation>`, `<file>` tags,
    fenced block fallback);
 4. rejects an empty/oversized (`MAX_OUTPUT_BYTES = 512 KiB`) payload;
@@ -149,8 +157,9 @@ current ruleset is `2026.8.0-pr` and still contains exactly 19 rules.
 | Area | Evidence |
 |---|---|
 | Changeset model | `crates/coderadar-domain/tests/changeset.rs` (12) |
-| PR use case | `crates/coderadar-usecases/src/pull_request.rs` (4) |
-| Tier 2 use case | `crates/coderadar-usecases/src/tier2.rs` (5) |
+| PR use case | `crates/coderadar-usecases/src/pull_request.rs` (3) |
+| Tier 2 use case | `crates/coderadar-usecases/src/tier2.rs` (6) |
+| Staged end to end | `crates/coderadar-infrastructure/tests/pr_staged_pipeline.rs` |
 | Git reader | `crates/coderadar-infrastructure/src/git_changeset.rs` (6) |
 | Staged scanner | `crates/coderadar-infrastructure/src/scanner.rs` (7) |
 | OTA | `crates/coderadar-infrastructure/src/rules_ota.rs` (7, incl. embedded manifest verification and tamper rejection) |

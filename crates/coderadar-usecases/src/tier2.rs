@@ -8,7 +8,7 @@
 //!
 //! Safety invariants enforced here, independent of the model:
 //!
-//! * the file must fit the Tier 2 budget ([`MAX_INPUT_BYTES`]);
+//! * the file must be non-empty and fit the Tier 2 budget ([`MAX_INPUT_BYTES`]);
 //! * the proposal must differ from the current file;
 //! * the proposal must be non-empty and within [`MAX_OUTPUT_BYTES`];
 //! * the payload is proven to be the exact result of its single whole-file
@@ -124,6 +124,12 @@ impl GenerateFix {
     ) -> BoxFuture<'a, Result<GeneratedFix, DomainError>> {
         Box::pin(async move {
             let source = self.reader.read_source(root, &finding.file_path).await?;
+            if source.content.is_empty() {
+                return Err(DomainError::Invariant(format!(
+                    "`{}` is empty: there is nothing for a Tier 2 provider to fix",
+                    finding.file_path
+                )));
+            }
             if source.content.len() > MAX_INPUT_BYTES {
                 return Err(DomainError::Invariant(format!(
                     "`{}` is larger than the Tier 2 budget of {} bytes",
@@ -367,6 +373,26 @@ mod tests {
         let error = crate::test_support::block_on(fix.generate("/repo", &finding()))
             .expect_err("oversized answers are rejected");
         assert!(error.to_string().contains("budget"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_input_file_is_rejected() {
+        let fix = GenerateFix::new(
+            Arc::new(FakeProvider {
+                draft: GeneratedFixDraft {
+                    explanation: "fix".to_string(),
+                    new_content: "const a = 1;\n".to_string(),
+                    warnings: Vec::new(),
+                },
+                local: true,
+            }),
+            Arc::new(FakeReader {
+                content: String::new(),
+            }),
+        );
+        let error = crate::test_support::block_on(fix.generate("/repo", &finding()))
+            .expect_err("an empty source file is rejected before the provider is called");
+        assert!(error.to_string().contains("empty"), "{error}");
     }
 
     #[test]

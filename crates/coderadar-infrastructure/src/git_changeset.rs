@@ -189,13 +189,12 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
-    fn stage(repository: &Repository, root: &Path, relative: &str) {
+    fn stage(repository: &Repository, relative: &str) {
         let mut index = repository.index().expect("index");
         index
             .add_all([relative], IndexAddOption::DEFAULT, None)
             .expect("stage");
         index.write().expect("write index");
-        let _ = root;
     }
 
     fn commit(repository: &Repository, message: &str) {
@@ -230,7 +229,7 @@ mod tests {
             "src/a.ts",
             "export const a = 1;\nconst internal = 2;\n",
         );
-        stage(&repository, root, "src/a.ts");
+        stage(&repository, "src/a.ts");
         commit(&repository, "initial");
 
         write(
@@ -238,7 +237,7 @@ mod tests {
             "src/a.ts",
             "export const a = 1;\nexport const c = 3;\nexport const d = 4;\n",
         );
-        stage(&repository, root, "src/a.ts");
+        stage(&repository, "src/a.ts");
 
         let changeset = GitChangesetReader::read_staged(root).expect("staged changeset");
         assert_eq!(changeset.base, "HEAD");
@@ -259,11 +258,11 @@ mod tests {
             "src/api.ts",
             "export function oldApi() {}\nexport function kept() {}\n",
         );
-        stage(&repository, root, "src/api.ts");
+        stage(&repository, "src/api.ts");
         commit(&repository, "initial");
 
         write(root, "src/api.ts", "export function kept() {}\n");
-        stage(&repository, root, "src/api.ts");
+        stage(&repository, "src/api.ts");
 
         let changeset = GitChangesetReader::read_staged(root).expect("staged changeset");
         assert_eq!(
@@ -279,12 +278,12 @@ mod tests {
         let root = directory.path();
         let repository = init_repository(root);
         write(root, "src/a.ts", "export const a = 1;\n");
-        stage(&repository, root, "src/a.ts");
+        stage(&repository, "src/a.ts");
         commit(&repository, "initial");
 
         write(root, "src/unstaged.ts", "export const b = 2;\n");
         write(root, "src/untracked.ts", "export const c = 3;\n");
-        stage(&repository, root, "src/untracked.ts");
+        stage(&repository, "src/untracked.ts");
 
         let changeset = GitChangesetReader::read_staged(root).expect("staged changeset");
         let paths: Vec<&str> = changeset
@@ -301,7 +300,7 @@ mod tests {
         let root = directory.path();
         let repository = init_repository(root);
         write(root, "src/a.ts", "export const a = 1;\n");
-        stage(&repository, root, "src/a.ts");
+        stage(&repository, "src/a.ts");
 
         let changeset = GitChangesetReader::read_staged(root).expect("staged changeset");
         assert_eq!(changeset.base, "empty");
