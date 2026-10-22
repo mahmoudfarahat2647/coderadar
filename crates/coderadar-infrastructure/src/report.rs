@@ -35,6 +35,8 @@ pub struct ScanStatsReport {
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
 }
 
 /// Findings counted by severity.
@@ -172,6 +174,7 @@ impl ScanReport {
                 module_chunks: outcome.module_chunks,
                 duration_ms,
                 compliance_percent: summary.compliance_percent,
+                suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             },
             session: SessionReport {
                 id: session.id.clone(),
@@ -239,7 +242,8 @@ mod tests {
 
     fn sample_outcome() -> ScanOutcome {
         let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
-            .with_files_scanned(2);
+            .with_files_scanned(2)
+            .with_suppressed_findings(2);
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -279,6 +283,7 @@ mod tests {
         assert_eq!(value["scan"]["module_chunks"], 2);
         assert_eq!(value["scan"]["duration_ms"], 42);
         assert_eq!(value["scan"]["compliance_percent"], 50);
+        assert_eq!(value["scan"]["suppressed_heuristic_findings"], 2);
 
         assert_eq!(value["session"]["id"], "scan-1");
         assert_eq!(value["session"]["root_dir"], "/tmp/root");

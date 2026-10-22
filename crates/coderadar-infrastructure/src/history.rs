@@ -34,6 +34,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scan_sessions (
          medium INTEGER NOT NULL,
          low INTEGER NOT NULL,
          compliance_percent INTEGER NOT NULL,
+         suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0,
          findings_json TEXT NOT NULL
      )";
 
@@ -108,6 +109,7 @@ struct SessionRecord {
     medium: usize,
     low: usize,
     compliance_percent: u8,
+    suppressed_heuristic_findings: usize,
     findings_json: String,
 }
 
@@ -137,6 +139,7 @@ impl SessionRecord {
             medium: summary.medium,
             low: summary.low,
             compliance_percent: summary.compliance_percent,
+            suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             findings_json,
         })
     }
@@ -227,6 +230,19 @@ impl SqliteScanHistoryRepository {
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| sqlite_error("cannot create the history schema", error))?;
+        // Migrate databases created before the heuristic precision floor: a
+        // freshly created schema already carries the column, so the ALTER is
+        // expected to fail with "duplicate column name" there.
+        if let Err(error) = connection.execute(
+            "ALTER TABLE scan_sessions
+             ADD COLUMN suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0",
+            params![],
+        ) {
+            let message = error.to_string();
+            if !message.contains("duplicate column name") {
+                return Err(sqlite_error("cannot migrate the history schema", error));
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path,
@@ -288,10 +304,10 @@ fn write_record(
     guard
         .execute(
             "INSERT OR REPLACE INTO scan_sessions (
-                 id, root_dir, mode, started_at_unix_ms, finished_at_unix_ms,
-                 files_scanned, total_findings, critical, high, medium, low,
-                 compliance_percent, findings_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                  id, root_dir, mode, started_at_unix_ms, finished_at_unix_ms,
+                  files_scanned, total_findings, critical, high, medium, low,
+                  compliance_percent, suppressed_heuristic_findings, findings_json
+              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 record.id,
                 record.root_dir,
@@ -305,6 +321,7 @@ fn write_record(
                 record.medium as i64,
                 record.low as i64,
                 record.compliance_percent as i64,
+                record.suppressed_heuristic_findings as i64,
                 record.findings_json,
             ],
         )
@@ -329,7 +346,8 @@ fn read_summaries(
     let mut statement = guard
         .prepare(
             "SELECT id, root_dir, mode, finished_at_unix_ms, files_scanned,
-                    total_findings, critical, high, medium, low, compliance_percent
+                    total_findings, critical, high, medium, low, compliance_percent,
+                    suppressed_heuristic_findings
              FROM scan_sessions
              WHERE ?2 IS NULL OR root_dir = ?2
              ORDER BY finished_at_unix_ms DESC, id DESC
@@ -350,6 +368,7 @@ fn read_summaries(
                 medium: row.get::<_, i64>(8)? as usize,
                 low: row.get::<_, i64>(9)? as usize,
                 compliance_percent: row.get::<_, i64>(10)? as u8,
+                suppressed_heuristic_findings: row.get::<_, i64>(11)? as usize,
             })
         })
         .map_err(|error| sqlite_error("cannot read the scan history", error))?;
@@ -438,7 +457,8 @@ mod tests {
         assert_eq!(repository.path().to_string_lossy(), ":memory:");
 
         let first = session("a", 1_000, 4, Vec::new());
-        let second = session("b", 2_000, 2, Vec::new());
+        let mut second = session("b", 2_000, 2, Vec::new());
+        second.suppressed_heuristic_findings = 3;
         crate::executor::block_on(repository.save_scan_session(&first)).expect("save");
         crate::executor::block_on(repository.save_scan_session(&second)).expect("save");
 
@@ -448,6 +468,8 @@ mod tests {
         assert_eq!(history[1].id, "a");
         assert_eq!(history[0].files_scanned, 2);
         assert_eq!(history[0].compliance_percent, 100);
+        assert_eq!(history[0].suppressed_heuristic_findings, 3);
+        assert_eq!(history[1].suppressed_heuristic_findings, 0);
     }
 
     #[test]

@@ -258,6 +258,8 @@ pub struct HistoryPointDTO {
     pub medium: usize,
     /// Number of low findings.
     pub low: usize,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
 }
@@ -276,6 +278,7 @@ impl HistoryPointDTO {
             high: summary.high,
             medium: summary.medium,
             low: summary.low,
+            suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             compliance_percent: summary.compliance_percent,
         }
     }

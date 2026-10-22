@@ -36,6 +36,9 @@ pub struct ScanSession {
     pub finished_at_unix_ms: Option<u64>,
     /// Number of files that were actually analysed.
     pub files_scanned: usize,
+    /// Heuristic findings dropped by the precision floor
+    /// (`CR-SPEC-09 §5`): they were produced, but not reported.
+    pub suppressed_heuristic_findings: usize,
     /// Findings produced by the scan.
     pub findings: Vec<Finding>,
 }
@@ -63,6 +66,8 @@ pub struct ScanSessionSummary {
     pub medium: usize,
     /// Number of low findings.
     pub low: usize,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
     /// Compliance score of the scan, 0-100 (files without findings).
     pub compliance_percent: u8,
 }
@@ -82,6 +87,7 @@ impl ScanSession {
             started_at_unix_ms,
             finished_at_unix_ms: None,
             files_scanned: 0,
+            suppressed_heuristic_findings: 0,
             findings: Vec::new(),
         }
     }
@@ -89,6 +95,13 @@ impl ScanSession {
     /// Record how many files were analysed.
     pub fn with_files_scanned(mut self, files_scanned: usize) -> Self {
         self.files_scanned = files_scanned;
+        self
+    }
+
+    /// Record how many heuristic findings the precision floor dropped
+    /// (`CR-SPEC-09 §5`).
+    pub fn with_suppressed_findings(mut self, suppressed: usize) -> Self {
+        self.suppressed_heuristic_findings = suppressed;
         self
     }
 
@@ -139,6 +152,7 @@ impl ScanSession {
             high: self.count_severity(Severity::High),
             medium: self.count_severity(Severity::Medium),
             low: self.count_severity(Severity::Low),
+            suppressed_heuristic_findings: self.suppressed_heuristic_findings,
             compliance_percent: self.compliance_percent(),
         }
     }
