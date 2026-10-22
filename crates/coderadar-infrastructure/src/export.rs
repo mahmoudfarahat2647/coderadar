@@ -162,6 +162,7 @@ mod tests {
             files_scanned: 4,
             ast_chunks: 8,
             module_chunks: 4,
+            pull_request: None,
         };
         let manifest = RuleManifest::embedded().expect("embedded manifest parses");
         ScanReport::from_scan(&outcome, &manifest, LayerMapSource::ConfigFile, 500)

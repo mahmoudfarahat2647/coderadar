@@ -8,6 +8,7 @@ import { PolarRadarCanvas } from "./components/PolarRadarCanvas";
 import { FindingDrawer } from "./components/FindingDrawer";
 import { ApiKeyDialog } from "./components/ApiKeyDialog";
 import { DiffModal } from "./components/DiffModal";
+import { PrHygienePanel } from "./components/PrHygienePanel";
 import { TrendChart } from "./components/TrendChart";
 import { StatusBar } from "./components/StatusBar";
 import {
@@ -18,6 +19,7 @@ import {
   FindingDTO,
   HistoryPointDTO,
   PatchPreviewDTO,
+  PrHygieneReport,
   ScanMode,
   ScanReport,
   ScanStats,
@@ -54,6 +56,8 @@ export const App: React.FC = () => {
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
   const [diffPreview, setDiffPreview] = useState<PatchPreviewDTO | null>(null);
+  const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
+  const [prHygiene, setPrHygiene] = useState<PrHygieneReport | null>(null);
   const [patchBusy, setPatchBusy] = useState<boolean>(false);
   const [historyPoints, setHistoryPoints] = useState<HistoryPointDTO[]>([]);
   const [scannedPath, setScannedPath] = useState<string>("");
@@ -114,6 +118,7 @@ export const App: React.FC = () => {
       (report: ScanReport) => {
         setIsScanning(false);
         setScanStats(report.scan);
+        setPrHygiene(report.pr_hygiene ?? null);
         // Refresh the engine badge: a scan may have triggered a Mock fallback.
         refreshEngineStatus();
         // The finished scan is now persisted in the SQLite history.
@@ -166,9 +171,7 @@ export const App: React.FC = () => {
     } else if (tab === "trend") {
       setActiveCategory("ALL");
     } else if (tab === "prs") {
-      setInfoBanner(
-        "PR Changeset Diff engine and hygiene scorecard are scheduled for Phase 8."
-      );
+      setActiveCategory("pull_requests");
     }
   };
 
@@ -220,6 +223,7 @@ export const App: React.FC = () => {
         );
         return;
       }
+      setDiffFinding(finding);
       setDiffPreview(preview);
     } catch (err) {
       setErrorMessage(typeof err === "string" ? err : String(err));
@@ -255,16 +259,10 @@ export const App: React.FC = () => {
   const handleStartScan = async () => {
     if (!targetPath.trim()) return;
 
-    if (scanMode === "staged_diff") {
-      setErrorMessage(
-        "Git staged diff scan is deferred to Phase 8 (requires Git changeset engine)"
-      );
-      return;
-    }
-
     setErrorMessage(null);
     setInfoBanner(null);
     setFindings([]);
+    setPrHygiene(null);
     setIsScanning(true);
     // The findings are relative to the workspace that is actually scanned:
     // patches must be applied to that root, not to a path typed later on.
@@ -389,6 +387,21 @@ export const App: React.FC = () => {
           module_chunks: 12,
           duration_ms: 142,
         });
+        if (scanMode === "staged_diff") {
+          setPrHygiene({
+            base: "HEAD",
+            files_changed: 6,
+            additions: 148,
+            deletions: 37,
+            lines_changed: 185,
+            production_files_changed: 5,
+            test_files_changed: 1,
+            areas_touched: ["docs", "src"],
+            scope_creep: true,
+            breaking_change: false,
+            missing_tests: true,
+          });
+        }
       }, 400);
     }
   };
@@ -536,7 +549,7 @@ export const App: React.FC = () => {
       {/* Main Content Area (360° Polar Radar Canvas + Findings Feed + Remediation Drawer) */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Left Pane: Polar Radar Canvas */}
-        {activeTab !== "trend" && (
+        {activeTab !== "trend" && activeTab !== "prs" && (
           <div
             className={`flex flex-col shrink-0 transition-all duration-300 relative border-r border-border-subtle ${
               activeTab === "radar"
@@ -557,7 +570,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Right Pane: Structured Findings Feed */}
-        {activeTab !== "radar" && activeTab !== "trend" && (
+        {activeTab !== "radar" && activeTab !== "trend" && activeTab !== "prs" && (
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-surface-panel/40">
             <FindingsFeed
               findings={filteredFindings}
@@ -573,6 +586,14 @@ export const App: React.FC = () => {
 
         {/* Quality Trend Chart (Phase 6) */}
         {activeTab === "trend" && <TrendChart points={historyPoints} />}
+
+        {/* Pull Request Hygiene Scorecard (Phase 8) */}
+        {activeTab === "prs" && (
+          <PrHygienePanel
+            report={prHygiene}
+            filesScanned={scanStats?.files_scanned ?? 0}
+          />
+        )}
 
         {/* Slide-over Finding Detail & Remediation Drawer */}
         {selectedFinding && (
@@ -607,10 +628,16 @@ export const App: React.FC = () => {
         open={diffPreview !== null}
         preview={diffPreview}
         rootPath={scannedPath}
-        onClose={() => setDiffPreview(null)}
+        finding={diffFinding}
+        onPreviewGenerated={setDiffPreview}
+        onClose={() => {
+          setDiffPreview(null);
+          setDiffFinding(null);
+        }}
         onApplied={(outcome) => {
           setInfoBanner(outcome.message);
           setDiffPreview(null);
+          setDiffFinding(null);
         }}
         onError={(message) => setErrorMessage(message)}
       />

@@ -450,7 +450,7 @@ mod tests {
         MarkdownReportInput {
             tool_name: "coderadar".to_string(),
             tool_version: "1.0.0".to_string(),
-            ruleset_version: "2026.1.0-strict".to_string(),
+            ruleset_version: "2026.8.0-pr".to_string(),
             layer_map_source: "config_file".to_string(),
             session_id: "scan-1".to_string(),
             root_dir: "/tmp/root".to_string(),

@@ -13,9 +13,19 @@
 
 mod fixes;
 mod ports;
+mod pull_request;
+#[cfg(test)]
+mod test_support;
+mod tier2;
 
 pub use fixes::{template_for, templated_rule_ids, FixTemplate, PreparePatch, ALL_TEMPLATES};
 pub use ports::{
-    BoxFuture, ChunkSink, PatchApplier, ProjectScannerGateway, ScanHistoryRepository,
-    SemanticRuleEvaluator, SourceFile, SourceFileReader,
+    BoxFuture, ChangesetGateway, ChunkSink, GenerativeFixProvider, PatchApplier,
+    ProjectScannerGateway, ScanHistoryRepository, SemanticRuleEvaluator, SourceFile,
+    SourceFileReader,
+};
+pub use pull_request::{AssessPullRequest, PullRequestAssessment};
+pub use tier2::{
+    FixFinding, FixGenerationRequest, GenerateFix, GeneratedFix, GeneratedFixDraft,
+    MAX_INPUT_BYTES, MAX_OUTPUT_BYTES,
 };

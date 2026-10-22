@@ -652,8 +652,10 @@ fn every_workspace_write_goes_through_the_workspace_guard() {
     );
 
     // The atomic write helper has a closed set of callers: the patch applier
-    // (which resolves the target through the workspace guard) and the
-    // Markdown export (whose target is an absolute path chosen by the user).
+    // (which resolves the target through the workspace guard), the Markdown
+    // export (whose target is an absolute path chosen by the user) and the
+    // signed-rules installer (which writes only the verified manifest under
+    // the app-data directory, never inside a workspace).
     let mut offenders = Vec::new();
     for file in repo.rust_files(&repo.crate_source_dirs()) {
         let content = fs::read_to_string(&file).unwrap_or_default();
@@ -662,12 +664,12 @@ fn every_workspace_write_goes_through_the_workspace_guard() {
         }
         let name = repo.display(&file);
         let file_name = name.rsplit('/').next().unwrap_or_default();
-        if !matches!(file_name, "patching.rs" | "export.rs") {
+        if !matches!(file_name, "patching.rs" | "export.rs" | "rules_ota.rs") {
             offenders.push(name);
         }
     }
     assert!(
         offenders.is_empty(),
-        "only the patch applier and the Markdown export may call 'atomic_write'; found: {offenders:?}"
+        "only the patch applier, the Markdown export and the signed-rules installer may call 'atomic_write'; found: {offenders:?}"
     );
 }

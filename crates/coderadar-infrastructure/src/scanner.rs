@@ -60,24 +60,9 @@ impl ProjectScannerGateway for ParallelFileScanner {
         mode: ScanMode,
         sink: &(dyn ChunkSink + 'static),
     ) -> Result<(), DomainError> {
-        match mode {
-            ScanMode::FullScan => {}
-            ScanMode::StagedDiff => {
-                return Err(DomainError::External(
-                    "staged diff scanning arrives with the Phase 8 Git engine".to_string(),
-                ));
-            }
-        }
-
-        let root_path = std::fs::canonicalize(root_dir).map_err(|error| {
-            DomainError::NotFound(format!(
-                "scan root '{root_dir}' cannot be canonicalized: {error}"
-            ))
-        })?;
-        if !root_path.is_dir() {
-            return Err(DomainError::NotFound(format!(
-                "scan root '{root_dir}' is not a directory"
-            )));
+        let root_path = canonical_root(root_dir)?;
+        if mode == ScanMode::StagedDiff {
+            return stream_staged(&root_path, sink);
         }
 
         let root = root_path.as_path();
@@ -117,6 +102,52 @@ impl ProjectScannerGateway for ParallelFileScanner {
     }
 }
 
+/// Canonicalise a scan root and reject anything that is not a directory.
+fn canonical_root(root_dir: &str) -> Result<std::path::PathBuf, DomainError> {
+    let root_path = std::fs::canonicalize(root_dir).map_err(|error| {
+        DomainError::NotFound(format!(
+            "scan root '{root_dir}' cannot be canonicalized: {error}"
+        ))
+    })?;
+    if !root_path.is_dir() {
+        return Err(DomainError::NotFound(format!(
+            "scan root '{root_dir}' is not a directory"
+        )));
+    }
+    Ok(root_path)
+}
+
+/// Stream only the files of the staged changeset (`PR-*` scans).
+///
+/// Deleted paths, paths that no longer exist, symlinks that resolve outside
+/// the workspace and non-code files are skipped, exactly like the full walk.
+fn stream_staged(root: &Path, sink: &(dyn ChunkSink + 'static)) -> Result<(), DomainError> {
+    let changeset = crate::git_changeset::GitChangesetReader::read_staged(root)?;
+    let mut chunker = Chunker::new();
+
+    for file in &changeset.files {
+        if file.path.split('/').any(|component| {
+            component.starts_with('.') || IGNORED_DIRECTORY_NAMES.contains(&component)
+        }) {
+            continue;
+        }
+        let candidate = root.join(&file.path);
+        let Ok(canonical) = std::fs::canonicalize(&candidate) else {
+            // Deleted in the index: nothing to analyse.
+            continue;
+        };
+        if !canonical.starts_with(root) || !canonical.is_file() {
+            continue;
+        }
+        let Some(file_name) = canonical.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        stream_file(&mut chunker, root, &canonical, file_name, sink)?;
+    }
+
+    Ok(())
+}
+
 /// Stream the chunks of one walked entry.
 ///
 /// Entries that are not scannable — directories, symlinks, unsupported
@@ -138,16 +169,27 @@ fn stream_entry(
     let Some(file_name) = entry.file_name().to_str() else {
         return Ok(());
     };
+    stream_file(chunker, root, entry.path(), file_name, sink)
+}
+
+/// Read, guard and chunk one file.
+fn stream_file(
+    chunker: &mut Chunker,
+    root: &Path,
+    path: &Path,
+    file_name: &str,
+    sink: &(dyn ChunkSink + 'static),
+) -> Result<(), DomainError> {
     let Some(language) = detect_language(file_name) else {
         return Ok(());
     };
-    let Ok(metadata) = entry.metadata() else {
+    let Ok(metadata) = std::fs::metadata(path) else {
         return Ok(());
     };
     if metadata.len() > MAX_FILE_BYTES {
         return Ok(());
     }
-    let Ok(bytes) = std::fs::read(entry.path()) else {
+    let Ok(bytes) = std::fs::read(path) else {
         return Ok(());
     };
     let Ok(source) = String::from_utf8(bytes) else {
@@ -160,7 +202,7 @@ fn stream_entry(
         return Ok(());
     }
 
-    let file_path = relative_slash_path(root, entry.path());
+    let file_path = relative_slash_path(root, path);
     let line_count = source.lines().count() as u32;
     sink.send_chunk(CodeChunk::file_module(
         &file_path, language, line_count, &source,
@@ -187,6 +229,7 @@ mod tests {
 
     use coderadar_domain::{ChunkKind, CodeChunk, DomainError, ScanMode};
     use coderadar_usecases::{ChunkSink, ProjectScannerGateway};
+    use git2::{IndexAddOption, Repository, Signature};
     use tempfile::TempDir;
 
     use super::{ParallelFileScanner, MAX_FILE_BYTES, MAX_LINE_LENGTH};
@@ -299,14 +342,72 @@ mod tests {
         assert_eq!(files, BTreeSet::from(["visible.ts".to_string()]));
     }
 
+    fn commit_all(repository: &Repository, message: &str) {
+        let mut index = repository.index().expect("index");
+        index
+            .add_all(["."], IndexAddOption::DEFAULT, None)
+            .expect("stage all");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repository.find_tree(tree_id).expect("tree object");
+        let signature = Signature::now("CodeRadar Tests", "tests@coderadar.invalid").unwrap();
+        let parents: Vec<git2::Commit<'_>> = match repository.head() {
+            Ok(head) => vec![head.peel_to_commit().expect("commit")],
+            Err(_) => Vec::new(),
+        };
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+        repository
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                message,
+                &tree,
+                &parent_refs,
+            )
+            .expect("commit");
+    }
+
+    fn stage(repository: &Repository, relative: &str) {
+        let mut index = repository.index().expect("index");
+        index.add_path(Path::new(relative)).expect("stage one path");
+        index.write().expect("write index");
+    }
+
     #[test]
-    fn staged_diff_mode_is_not_implemented_yet() {
+    fn staged_diff_scans_only_the_staged_files() {
         let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let repository = Repository::init(root).expect("repository");
+        write_file(root, "src/a.ts", CLEAN_TS.as_bytes());
+        write_file(root, "src/b.ts", b"export const b = 1;\n");
+        commit_all(&repository, "initial");
+
+        write_file(root, "src/a.ts", b"export const changed = 1;\n");
+        write_file(root, "src/b.ts", b"export const changed = 2;\n");
+        stage(&repository, "src/a.ts");
+
+        let sink = CollectingChunkSink::new();
+        ParallelFileScanner::new()
+            .stream_project_chunks(root.to_str().unwrap(), ScanMode::StagedDiff, &sink)
+            .expect("staged scan succeeds");
+        let files: BTreeSet<String> = sink
+            .drain()
+            .iter()
+            .map(|chunk| chunk.file_path.clone())
+            .collect();
+        assert_eq!(files, BTreeSet::from(["src/a.ts".to_string()]));
+    }
+
+    #[test]
+    fn staged_diff_requires_a_git_repository() {
+        let temp = TempDir::new().unwrap();
+        write_file(temp.path(), "a.ts", CLEAN_TS.as_bytes());
         let sink = CollectingChunkSink::new();
         let error = ParallelFileScanner::new()
             .stream_project_chunks(temp.path().to_str().unwrap(), ScanMode::StagedDiff, &sink)
             .unwrap_err();
-        assert!(matches!(&error, DomainError::External(message) if message.contains("Phase 8")));
+        assert!(matches!(error, DomainError::NotFound(_)), "{error:?}");
         assert!(sink.is_empty());
     }
 

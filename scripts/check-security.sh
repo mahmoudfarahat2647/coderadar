@@ -356,20 +356,22 @@ if [ -f "$INFRA_LIB" ]; then
 fi
 
 # The atomic write helper has a closed set of callers: the patch applier
-# (which resolves every workspace write through the workspace guard) and the
-# Markdown export (which writes only the user-chosen report path).
+# (which resolves every workspace write through the workspace guard), the
+# Markdown export (which writes only the user-chosen report path) and the
+# signed-rules installer (which writes only the verified manifest under the
+# app-data directory, never inside a workspace).
 while IFS= read -r hit; do
   [ -z "$hit" ] && continue
   FILE="${hit%%:*}"
   BASE="${FILE##*/}"
   case "$BASE" in
-    patching.rs|export.rs) ;;
-    *) violation "$BASE calls 'atomic_write' outside the two sanctioned writers (patching.rs, export.rs)" ;;
+    patching.rs|export.rs|rules_ota.rs) ;;
+    *) violation "$BASE calls 'atomic_write' outside the sanctioned writers (patching.rs, export.rs, rules_ota.rs)" ;;
   esac
 done <<EOF
 $(crate_matches "atomic_write")
 EOF
-checked "the patch applier resolves every workspace write through the workspace guard; the Markdown export writes only the user-chosen report path"
+checked "the patch applier resolves every workspace write through the workspace guard; the Markdown export writes only the user-chosen report path; the rules installer writes only a verified manifest outside workspaces"
 
 # ---------------------------------------------------------------------------
 if [ "$FAIL" -ne 0 ]; then

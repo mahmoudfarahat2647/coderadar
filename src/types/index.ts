@@ -50,6 +50,24 @@ export interface ScanStats {
   duration_ms: number;
 }
 
+/**
+ * Phase 8 - Pull Request hygiene scorecard (staged_diff scans only).
+ * The backend omits `pr_hygiene` for full scans.
+ */
+export interface PrHygieneReport {
+  base: string;
+  files_changed: number;
+  additions: number;
+  deletions: number;
+  lines_changed: number;
+  production_files_changed: number;
+  test_files_changed: number;
+  areas_touched: string[];
+  scope_creep: boolean;
+  breaking_change: boolean;
+  missing_tests: boolean;
+}
+
 export interface ScanReport {
   tool: {
     name: string;
@@ -67,6 +85,7 @@ export interface ScanReport {
     totals: SeverityTotals;
   };
   findings: FindingDTO[];
+  pr_hygiene?: PrHygieneReport | null;
 }
 
 export interface EngineStatus {
@@ -146,7 +165,8 @@ export interface PatchPreviewDTO {
   /**
    * The patch payload, or `null` when no deterministic fix exists for the
    * finding: the remediation template did not match the code exactly
-   * (CR-SPEC-13 §5). LLM-generated fixes remain a later phase.
+   * (CR-SPEC-13 §5). A Tier 2 (LLM) fix is generated separately and arrives
+   * as a full preview through `generate_fix`.
    */
   proposal: PatchProposalDTO | null;
 }
@@ -182,4 +202,29 @@ export interface ExportOutcomeDTO {
   path: string;
   bytes: number;
   findings: number;
+}
+
+/** Phase 8 - Tier 2 provider configuration (local Ollama / cloud Gemini). */
+export type Tier2Provider = "ollama" | "gemini";
+
+export interface Tier2StatusDTO {
+  local_provider: string;
+  local_model: string;
+  local_endpoint: string;
+  cloud_provider: string;
+  cloud_model: string;
+  cloud_key_configured: boolean;
+}
+
+export interface Tier2FixRequestDTO {
+  root_path: string;
+  file_path: string;
+  rule_id: string;
+  title: string;
+  description: string;
+  line_start: number;
+  line_end: number;
+  provider: Tier2Provider;
+  /** Explicit consent before a fully redacted file leaves the machine. */
+  allow_cloud: boolean;
 }

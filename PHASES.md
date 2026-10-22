@@ -113,11 +113,15 @@
 
 **Gate:** clean-machine install on each OS; full scan → fix → history works. → PARTIAL — **(1) Verified by the machine (the engine half):** scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks; the `architecture`, `security` and `performance` CI jobs are green; the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1); and the draft release carries the artefacts produced by `.github/workflows/release.yml` — Windows (`.msi` + `.exe`), macOS (aarch64 + x86_64 `.dmg`), Linux (`.deb` + `.AppImage`) and `SHA256SUMS.txt`. **(2) Still open (the human half):** the clean-machine install on each target OS, which is the human action of this gate and has not been performed on any of them — macOS and Linux cannot be executed from a single Windows machine, and a Windows clean-machine install has not been performed either. **(3) Why a draft release exists:** it holds the installers so that this clean-machine install can be run before the release is published *(CR-SPEC-15 §8)*.
 
-## Phase 8 — Post-MVP (v1.1+)
-- Git Changeset engine and PR Hygiene scorecard (`PR-*` rules)
-- Tier 2 auto-fix via Ollama or a free-tier cloud LLM
-- Signed OTA rule updates (Ed25519)
-- Then v1.5/v2.0: PR auto-commenter, rule builder, team sync, IDE extensions
+## Phase 8 — Post-MVP (v1.1+) — (see `coderadar-specs/16-PHASE-8-POST-MVP-PR-HYGIENE-TIER2-OTA.md`)
+**Goal:** review a staged pull request, generate fixes the templates cannot produce, and update rules without shipping a new binary.
+
+- [x] Git Changeset engine and PR Hygiene scorecard (`PR-SCP-001`, `PR-BRK-002`, `PR-TST-003`) *(git2 reader `crates/coderadar-infrastructure/src/git_changeset.rs`, assessor `crates/coderadar-usecases/src/pull_request.rs`, `pr_hygiene` report block, PRs tab; CLI `--staged` — CR-SPEC-16 §3)*
+- [x] Tier 2 auto-fix via local Ollama or free-tier Gemini *(providers `crates/coderadar-infrastructure/src/tier2.rs`, safety checks `crates/coderadar-usecases/src/tier2.rs`, diff preview + consent UI; cloud requests refuse unredactable files — CR-SPEC-16 §4)*
+- [x] Signed OTA rule updates (Ed25519) *(canonical JSON signature, atomic install outside workspaces, embedded-key fallback, `coderadar rules verify|install` — CR-SPEC-16 §5)*
+- [ ] Then v1.5/v2.0: PR auto-commenter, rule builder, team sync, IDE extensions
+
+**Gate:** CI green (fmt, clippy, tests, architecture, security, MSRV 1.82, frontend build); staged fixture scan emits the expected `PR-*` findings; Tier 2 rejects empty/oversized/unchanged drafts and cloud secrets; tampered manifests are refused and valid ones activate. The human step is one desktop run with Ollama and one with a Gemini key, reviewing the generated diff before applying it. — PARTIAL — the engine/UI half is implemented and covered by the suites listed in CR-SPEC-16 §7; the two live-provider runs have not been performed on this machine.
 
 ---
 

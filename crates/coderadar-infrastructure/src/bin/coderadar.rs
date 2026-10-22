@@ -1,25 +1,30 @@
 //! `coderadar` CLI — terminal entry point for the CodeRadar engine.
 //!
 //! ```text
-//! coderadar scan <path> [--pretty] [--markdown]
-//! coderadar report <path> [--out <file>]
+//! coderadar scan <path> [--staged] [--pretty] [--markdown]
+//! coderadar report <path> [--staged] [--out <file>]
+//! coderadar rules verify <manifest.json>
+//! coderadar rules install <manifest.json>
 //! ```
 //!
 //! `scan` prints the [`ScanReport`] as structured JSON on stdout; with
 //! `--markdown` it prints the Markdown report instead (`FR-07`). `report` runs
-//! the scan and writes the Markdown report to a file.
+//! the scan and writes the Markdown report to a file. `--staged` restricts the
+//! scan to the staged Git changeset and adds the Pull Request hygiene
+//! scorecard. `rules verify|install` validates a signed OTA ruleset.
 //!
 //! Exit codes: `0` scan completed, `1` runtime failure (bad path, I/O, engine
-//! error), `2` usage error.
+//! error, invalid signature), `2` usage error.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use coderadar_domain::ScanMode;
 use coderadar_infrastructure::{
-    scan_project, write_markdown_report, ScanReport, DEFAULT_REPORT_FILE_NAME,
+    scan_project_mode, write_markdown_report, RulesStore, ScanReport, DEFAULT_REPORT_FILE_NAME,
 };
 
-const USAGE: &str = "usage: coderadar scan <path> [--pretty] [--markdown]\n       coderadar report <path> [--out <file>]\n       (`--out` is only valid for `report`)";
+const USAGE: &str = "usage: coderadar scan <path> [--staged] [--pretty] [--markdown]\n       coderadar report <path> [--staged] [--out <file>]\n       coderadar rules verify <manifest.json>\n       coderadar rules install <manifest.json>\n       (`--out` is only valid for `report`)";
 
 /// The two modes of the CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +44,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<ExitCode, ExitCode> {
+    if args.first().map(String::as_str) == Some("rules") {
+        return run_rules(&args[1..]);
+    }
+
     let mut pretty = false;
     let mut markdown = false;
+    let mut staged = false;
     let mut output: Option<PathBuf> = None;
     let mut path: Option<PathBuf> = None;
 
@@ -62,6 +72,7 @@ fn run(args: &[String]) -> Result<ExitCode, ExitCode> {
         match arg.as_str() {
             "--pretty" => pretty = true,
             "--markdown" => markdown = true,
+            "--staged" => staged = true,
             "--out" => {
                 let Some(value) = iter.next() else {
                     eprintln!("`--out` expects a file path\n{USAGE}");
@@ -98,7 +109,12 @@ fn run(args: &[String]) -> Result<ExitCode, ExitCode> {
         return Err(ExitCode::from(2));
     }
 
-    let report = match scan_project(&path) {
+    let scan_mode = if staged {
+        ScanMode::StagedDiff
+    } else {
+        ScanMode::FullScan
+    };
+    let report = match scan_project_mode(&path, scan_mode) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {error}");
@@ -109,6 +125,68 @@ fn run(args: &[String]) -> Result<ExitCode, ExitCode> {
     match mode {
         Mode::Scan => print_scan(&report, pretty, markdown),
         Mode::Report => write_report(&report, output.as_deref()),
+    }
+}
+
+/// Verify or install a signed OTA ruleset.
+fn run_rules(args: &[String]) -> Result<ExitCode, ExitCode> {
+    let Some(action) = args.first().map(String::as_str) else {
+        eprintln!("missing `rules` action\n{USAGE}");
+        return Err(ExitCode::from(2));
+    };
+    if !matches!(action, "verify" | "install") {
+        eprintln!("unknown `rules` action `{action}`\n{USAGE}");
+        return Err(ExitCode::from(2));
+    }
+    let Some(file) = args.get(1) else {
+        eprintln!("missing <manifest.json>\n{USAGE}");
+        return Err(ExitCode::from(2));
+    };
+    if let Some(extra) = args.get(2) {
+        eprintln!("unexpected extra argument `{extra}`\n{USAGE}");
+        return Err(ExitCode::from(2));
+    }
+
+    let json = match std::fs::read_to_string(file) {
+        Ok(json) => json,
+        Err(error) => {
+            eprintln!("error: cannot read `{file}`: {error}");
+            return Err(ExitCode::FAILURE);
+        }
+    };
+
+    if action == "verify" {
+        return match RulesStore::verify(&json) {
+            Ok(manifest) => {
+                println!(
+                    "signature valid: ruleset {} ({} rules)",
+                    manifest.ruleset_version,
+                    manifest.len()
+                );
+                Ok(ExitCode::SUCCESS)
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                Err(ExitCode::FAILURE)
+            }
+        };
+    }
+
+    let store = RulesStore::new(RulesStore::default_data_dir());
+    match store.install(&json) {
+        Ok(manifest) => {
+            println!(
+                "installed ruleset {} ({} rules) in {}",
+                manifest.ruleset_version,
+                manifest.len(),
+                store.manifest_path().display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            Err(ExitCode::FAILURE)
+        }
     }
 }
 

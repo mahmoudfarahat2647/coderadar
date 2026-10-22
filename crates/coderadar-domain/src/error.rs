@@ -15,6 +15,8 @@ pub enum DomainError {
     Io(String),
     /// An external agency (Jev, database, ...) failed.
     External(String),
+    /// An operation was refused by an authority check (signature, policy).
+    Permission(String),
     /// A requested entity was not found.
     NotFound(String),
 }
@@ -38,6 +40,7 @@ impl fmt::Display for DomainError {
             Self::Parse(message) => write!(f, "failed to parse domain value: {message}"),
             Self::Io(message) => write!(f, "io error: {message}"),
             Self::External(message) => write!(f, "external service error: {message}"),
+            Self::Permission(message) => write!(f, "permission refused: {message}"),
             Self::NotFound(message) => write!(f, "not found: {message}"),
         }
     }

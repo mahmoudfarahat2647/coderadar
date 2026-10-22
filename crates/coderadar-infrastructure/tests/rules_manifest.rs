@@ -8,7 +8,7 @@ fn embedded_manifest_loads_with_nineteen_rules() {
     let manifest = RuleManifest::embedded().expect("embedded manifest parses");
     assert_eq!(manifest.len(), EXPECTED_RULE_COUNT);
     assert_eq!(manifest.declared_total_rules, EXPECTED_RULE_COUNT);
-    assert_eq!(manifest.ruleset_version, "2026.1.0-strict");
+    assert_eq!(manifest.ruleset_version, "2026.8.0-pr");
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn manifest_on_disk_matches_embedded_copy() {
 #[test]
 fn manifest_rejects_declared_count_mismatch() {
     let broken = r#"{
-        "ruleset_version": "2026.1.0-strict",
+        "ruleset_version": "2026.8.0-pr",
         "generated_at": "2026-10-16T21:40:00Z",
         "total_rules": 5,
         "categories": ["security"],

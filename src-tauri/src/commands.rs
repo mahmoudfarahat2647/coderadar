@@ -7,13 +7,20 @@ use std::time::{Duration, Instant};
 use coderadar_adapters::{
     unified_diff, HistoryPointDTO, PatchOutcomeDTO, PatchPreviewDTO, PatchProposalDTO,
 };
+use coderadar_domain::ScanMode;
 use coderadar_infrastructure::{
-    block_on, is_semantic_rule, mask_api_key, scan_project_streaming_with_history,
-    write_markdown_report, CredentialStore, EngineStatusSnapshot, FindingBatch, JevConfig,
-    KeyringCredentialStore, RuleManifest, SafePatchApplier, ScanReport, SemanticEngine,
-    SqliteScanHistoryRepository, TIER0_OWNED_IDS,
+    block_on, is_semantic_rule, mask_api_key, resolve_gemini_key,
+    scan_project_streaming_with_history_mode, write_markdown_report, CredentialStore,
+    EngineStatusSnapshot, FindingBatch, GeminiFixProvider, JevConfig,
+    KeyringCredentialStore, OllamaFixProvider, RulesStore, SafePatchApplier,
+    ScanReport, SemanticEngine, SqliteScanHistoryRepository, DEFAULT_GEMINI_MODEL,
+    DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL, GEMINI_MODEL_ENV, OLLAMA_ENDPOINT_ENV,
+    OLLAMA_MODEL_ENV, TIER0_OWNED_IDS,
 };
-use coderadar_usecases::{PatchApplier, PreparePatch, ScanHistoryRepository, SourceFileReader};
+use coderadar_usecases::{
+    FixFinding, GenerateFix, GenerativeFixProvider, PatchApplier, PreparePatch,
+    ScanHistoryRepository, SourceFileReader,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -86,6 +93,7 @@ impl HistoryHandle {
 pub struct AppState {
     engine: RwLock<SemanticEngine>,
     credentials: KeyringCredentialStore,
+    tier2_credentials: KeyringCredentialStore,
     history: Arc<HistoryHandle>,
     /// The report of the last finished scan, kept so the UI can export it as a
     /// Markdown document. It is `None` until the first scan succeeds.
@@ -105,6 +113,7 @@ impl AppState {
         Self {
             engine: RwLock::new(SemanticEngine::from_environment()),
             credentials: KeyringCredentialStore::new(),
+            tier2_credentials: KeyringCredentialStore::gemini(),
             history,
             last_report: RwLock::new(None),
         }
@@ -142,21 +151,16 @@ pub struct EngineStatusPayload {
 impl EngineStatusPayload {
     /// Build the payload from an engine snapshot plus keychain/ruleset details.
     fn from_snapshot(snapshot: EngineStatusSnapshot, key: Option<String>) -> Self {
-        let manifest = RuleManifest::embedded().ok();
-        let rules = manifest
-            .as_ref()
-            .map(|manifest| manifest.rules.as_slice())
-            .unwrap_or(&[]);
+        let active = RulesStore::new(RulesStore::default_data_dir()).active_or_embedded();
+        let manifest = active.manifest;
+        let rules = manifest.rules.as_slice();
         let tier0_rules_count = rules
             .iter()
             .filter(|rule| TIER0_OWNED_IDS.contains(&rule.id.as_str()))
             .count();
         let semantic_rules_count = rules.iter().filter(|rule| is_semantic_rule(rule)).count();
         let total_rules = rules.len();
-        let ruleset_version = manifest
-            .as_ref()
-            .map(|manifest| manifest.ruleset_version.clone())
-            .unwrap_or_else(|| "unknown".to_string());
+        let ruleset_version = manifest.ruleset_version.clone();
 
         let description = format!(
             "{}: {} Tier 0 (deterministic) + {} semantic rules active.",
@@ -188,14 +192,23 @@ fn current_status(state: &AppState) -> EngineStatusPayload {
     EngineStatusPayload::from_snapshot(snapshot, key)
 }
 
-/// Scan mode requested by the UI; `staged_diff` is Phase 8 scope.
+/// Scan mode requested by the UI.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanModeArg {
     /// Full project walk.
     FullScan,
-    /// Git staged changes only (not implemented yet).
+    /// Git staged changes only, with the Pull Request hygiene scorecard.
     StagedDiff,
+}
+
+impl From<ScanModeArg> for ScanMode {
+    fn from(mode: ScanModeArg) -> Self {
+        match mode {
+            ScanModeArg::FullScan => Self::FullScan,
+            ScanModeArg::StagedDiff => Self::StagedDiff,
+        }
+    }
 }
 
 /// Start a scan on `path` in `mode`, streaming batched findings to the frontend
@@ -206,11 +219,7 @@ pub async fn start_scan(
     path: String,
     mode: ScanModeArg,
 ) -> Result<ScanReport, String> {
-    if let ScanModeArg::StagedDiff = mode {
-        return Err(
-            "Git staged diff scan is deferred to Phase 8 (requires Git changeset engine)".into(),
-        );
-    }
+    let scan_mode = ScanMode::from(mode);
 
     let root_path = PathBuf::from(&path);
     if !root_path.exists() {
@@ -232,10 +241,11 @@ pub async fn start_scan(
         // the opener thread must never happen on the UI thread.
         let repository = history.repository().clone();
         let app_for_batches = app_handle.clone();
-        scan_project_streaming_with_history(
+        scan_project_streaming_with_history_mode(
             &root_path,
             evaluator,
             Duration::from_millis(100),
+            scan_mode,
             move |batch: FindingBatch| {
                 let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
             },
@@ -267,11 +277,11 @@ pub async fn start_scan(
     }
 }
 
-/// Retrieve the active rules manifest JSON.
+/// Retrieve the active rules manifest JSON (installed OTA ruleset or embedded).
 #[tauri::command]
 pub fn get_rules() -> Result<serde_json::Value, String> {
-    const MANIFEST_JSON: &str = include_str!("../../rules/manifest.json");
-    serde_json::from_str(MANIFEST_JSON).map_err(|e| e.to_string())
+    let json = RulesStore::new(RulesStore::default_data_dir()).active_json();
+    serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
 /// Retrieve the current engine telemetry (mode, badge, latency, key state).
@@ -328,6 +338,161 @@ pub fn clear_api_key(state: tauri::State<'_, AppState>) -> Result<EngineStatusPa
     drop(engine);
 
     Ok(current_status(&state))
+}
+
+/// Tier 2 provider configuration shown in the settings panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct Tier2StatusPayload {
+    /// Token of the local provider (`ollama`).
+    pub local_provider: &'static str,
+    /// Local model name.
+    pub local_model: String,
+    /// Local Ollama endpoint.
+    pub local_endpoint: String,
+    /// Token of the cloud provider (`gemini`).
+    pub cloud_provider: &'static str,
+    /// Cloud model name.
+    pub cloud_model: String,
+    /// Whether a Gemini key is stored in the keychain or the environment.
+    pub cloud_key_configured: bool,
+}
+
+fn tier2_status() -> Tier2StatusPayload {
+    let local_model =
+        std::env::var(OLLAMA_MODEL_ENV).unwrap_or_else(|_| DEFAULT_OLLAMA_MODEL.to_string());
+    let local_endpoint =
+        std::env::var(OLLAMA_ENDPOINT_ENV).unwrap_or_else(|_| DEFAULT_OLLAMA_ENDPOINT.to_string());
+    let cloud_model =
+        std::env::var(GEMINI_MODEL_ENV).unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.to_string());
+    let cloud_key_configured =
+        resolve_gemini_key(&KeyringCredentialStore::gemini()).is_some();
+
+    Tier2StatusPayload {
+        local_provider: "ollama",
+        local_model,
+        local_endpoint,
+        cloud_provider: "gemini",
+        cloud_model,
+        cloud_key_configured,
+    }
+}
+
+/// Read the Tier 2 provider configuration.
+#[tauri::command]
+pub fn get_tier2_status() -> Tier2StatusPayload {
+    tier2_status()
+}
+
+/// Store the Gemini API key in the OS keychain.
+#[tauri::command]
+pub fn store_tier2_key(
+    state: tauri::State<'_, AppState>,
+    api_key: String,
+) -> Result<Tier2StatusPayload, String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return Err("API key must not be empty".to_string());
+    }
+    state
+        .tier2_credentials
+        .set_api_key(trimmed)
+        .map_err(|error| error.to_string())?;
+    Ok(tier2_status())
+}
+
+/// Remove the stored Gemini API key.
+#[tauri::command]
+pub fn clear_tier2_key(state: tauri::State<'_, AppState>) -> Result<Tier2StatusPayload, String> {
+    state
+        .tier2_credentials
+        .delete_api_key()
+        .map_err(|error| error.to_string())?;
+    Ok(tier2_status())
+}
+
+/// A Tier 2 generation request from the UI.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tier2FixRequestDTO {
+    /// Workspace root.
+    pub root_path: String,
+    /// Workspace-relative file path.
+    pub file_path: String,
+    /// Rule identifier.
+    pub rule_id: String,
+    /// Rule title.
+    pub title: String,
+    /// Finding description.
+    pub description: String,
+    /// First offending line.
+    pub line_start: u32,
+    /// Last offending line.
+    pub line_end: u32,
+    /// `ollama` or `gemini`.
+    pub provider: String,
+    /// Explicit consent to send the file to a cloud model.
+    #[serde(default)]
+    pub allow_cloud: bool,
+}
+
+/// Generate a Tier 2 fix and return it as a reviewable diff preview.
+///
+/// Nothing is written: the proposal is rendered exactly like a deterministic
+/// fix, so the user reviews the diff and applies it through `apply_patch`.
+#[tauri::command]
+pub async fn generate_fix(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, String> {
+    tauri::async_runtime::spawn_blocking(move || build_tier2_preview(request))
+        .await
+        .map_err(|error| format!("Tier 2 task join error: {error}"))?
+}
+
+fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, String> {
+    let provider: Arc<dyn GenerativeFixProvider> = match request.provider.as_str() {
+        "ollama" => Arc::new(
+            OllamaFixProvider::from_env().map_err(|error| error.to_string())?,
+        ),
+        "gemini" => {
+            if !request.allow_cloud {
+                return Err(
+                    "Cloud fix generation needs explicit consent: enable `allow_cloud` after \
+                     reviewing the privacy notice."
+                        .to_string(),
+                );
+            }
+            let key = resolve_gemini_key(&KeyringCredentialStore::gemini()).ok_or_else(|| {
+                "No Gemini API key is configured. Add one in Settings or use the local \
+                 Ollama provider."
+                    .to_string()
+            })?;
+            Arc::new(GeminiFixProvider::from_key(key).map_err(|error| error.to_string())?)
+        }
+        other => {
+            return Err(format!(
+                "Unknown Tier 2 provider `{other}` (expected `ollama` or `gemini`)"
+            ))
+        }
+    };
+
+    let reader: Arc<dyn SourceFileReader> = Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
+    let generator = GenerateFix::new(provider, Arc::clone(&reader));
+    let finding = FixFinding {
+        file_path: request.file_path.clone(),
+        rule_id: request.rule_id.clone(),
+        title: request.title.clone(),
+        description: request.description.clone(),
+        line_start: request.line_start,
+        line_end: request.line_end,
+    };
+    let generated = block_on(generator.generate(&request.root_path, &finding))
+        .map_err(|error| format!("The Tier 2 model cannot produce a fix: {error}"))?;
+    let source = block_on(reader.read_source(&request.root_path, &request.file_path))
+        .map_err(|error| format!("Cannot read `{}`: {error}", request.file_path))?;
+
+    Ok(preview_from_proposal(
+        generated.proposal,
+        &source.content,
+        format!("Tier 2 fix for {}", request.rule_id),
+        generated.warnings,
+    ))
 }
 
 /// Retrieve default workspace path or fixture path.
@@ -398,12 +563,27 @@ fn build_preview(
         }
     };
 
-    let diff = unified_diff(&source.content, &proposal.new_content, &file_path);
     let title = coderadar_usecases::template_for(&rule_id)
         .map(|template| template.title.to_string())
         .unwrap_or_else(|| format!("Deterministic fix for {rule_id}"));
 
-    Ok(PatchPreviewDTO {
+    Ok(preview_from_proposal(
+        proposal,
+        &source.content,
+        title,
+        Vec::new(),
+    ))
+}
+
+/// Render a proposal against the original content as a UI preview.
+fn preview_from_proposal(
+    proposal: coderadar_domain::PatchProposal,
+    original_content: &str,
+    title: String,
+    warnings: Vec<String>,
+) -> PatchPreviewDTO {
+    let diff = unified_diff(original_content, &proposal.new_content, &proposal.file_path);
+    PatchPreviewDTO {
         file_path: proposal.file_path.clone(),
         rule_id: proposal.rule_id.clone(),
         title,
@@ -414,9 +594,9 @@ fn build_preview(
         unified_diff: diff.text.clone(),
         added_lines: diff.added_lines,
         removed_lines: diff.removed_lines,
-        warnings: Vec::new(),
+        warnings,
         proposal: Some(PatchProposalDTO::from_proposal(&proposal, diff.text)),
-    })
+    }
 }
 
 /// Build the preview of a finding that has no deterministic fix.

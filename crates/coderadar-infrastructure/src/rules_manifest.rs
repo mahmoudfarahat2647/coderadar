@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 /// The manifest shipped inside the binary, so the ruleset is always available
 /// even offline and without a filesystem read.
-const EMBEDDED_MANIFEST: &str = include_str!("../../../rules/manifest.json");
+pub const EMBEDDED_MANIFEST_JSON: &str = include_str!("../../../rules/manifest.json");
 
 #[derive(Debug, Deserialize)]
 struct ManifestDto {
@@ -42,7 +42,7 @@ struct RuleDto {
 /// A validated, in-memory ruleset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleManifest {
-    /// Monotonic ruleset version, e.g. `2026.1.0-strict`.
+    /// Monotonic ruleset version, e.g. `2026.8.0-pr`.
     pub ruleset_version: String,
     /// ISO-8601 generation timestamp.
     pub generated_at: String,
@@ -50,7 +50,8 @@ pub struct RuleManifest {
     pub declared_total_rules: usize,
     /// Declared category tokens.
     pub categories: Vec<String>,
-    /// Ed25519 signature placeholder (verified in Phase 8).
+    /// Ed25519 signature (`ed25519:<hex>`) over the canonical manifest;
+    /// verified by [`crate::RulesStore::verify`].
     pub signature: String,
     /// The rules, in manifest order.
     pub rules: Vec<RuleSpec>,
@@ -62,7 +63,7 @@ impl RuleManifest {
     /// # Errors
     /// Returns [`DomainError`] if the embedded manifest cannot be parsed.
     pub fn embedded() -> Result<Self, DomainError> {
-        Self::from_json(EMBEDDED_MANIFEST)
+        Self::from_json(EMBEDDED_MANIFEST_JSON)
     }
 
     /// Load the manifest from disk.

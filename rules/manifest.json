@@ -1,9 +1,9 @@
 {
-  "ruleset_version": "2026.1.0-strict",
-  "generated_at": "2026-10-16T21:40:00Z",
+  "ruleset_version": "2026.8.0-pr",
+  "generated_at": "2026-10-21T00:00:00Z",
   "total_rules": 19,
   "categories": ["security", "architecture", "edge_cases", "performance", "pull_requests"],
-  "signature": "ed25519:8f6a9c12e5d4b7a2c1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8verified_by_coderadar_authority",
+  "signature": "ed25519:8f0299d90298b62f81048e5bde0779a5334d4191894871fe615ee2e3a0298ed529603063f07300f62e16e90ece9f8ada3e4e1467c4a6ec450d835456c483910d",
   "rules": [
     {
       "id": "SEC-INJ-001",

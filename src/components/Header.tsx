@@ -113,14 +113,15 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
           <button
             onClick={() => onTabChange("prs")}
-            className="px-3 py-1.5 rounded-md transition-colors text-text-muted/60 hover:text-text-muted flex items-center space-x-1.5"
-            title="PR Changeset Diff engine is scheduled for Phase 8"
+            className={`px-3 py-1.5 rounded-md transition-colors flex items-center space-x-1.5 ${
+              activeTab === "prs"
+                ? "bg-surface-elevated text-secondary border border-border-subtle"
+                : "text-text-muted hover:text-text-primary hover:bg-surface-elevated/50"
+            }`}
+            title="Pull Request Hygiene Scorecard (Phase 8)"
           >
-            <GitPullRequest className="w-3.5 h-3.5" />
+            <GitPullRequest className="w-3.5 h-3.5 text-secondary" />
             <span>PRs</span>
-            <span className="text-[9px] uppercase px-1 py-0.2 rounded bg-surface-elevated text-text-muted border border-border-subtle">
-              P8
-            </span>
           </button>
         </nav>
       </div>

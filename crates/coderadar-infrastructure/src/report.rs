@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-use coderadar_domain::{Finding, Severity};
+use coderadar_domain::{Finding, PullRequestHygiene, Severity};
 
 use crate::layer_map::LayerMapSource;
 use crate::pipeline::ScanOutcome;
@@ -98,6 +98,33 @@ pub struct FindingReport {
     pub risk_score: f32,
 }
 
+/// Pull Request hygiene scorecard (present for `staged_diff` scans).
+#[derive(Debug, Clone, Serialize)]
+pub struct PrHygieneReport {
+    /// The revision the staged index was compared against (`HEAD` or `empty`).
+    pub base: String,
+    /// Number of changed files.
+    pub files_changed: usize,
+    /// Number of added lines.
+    pub additions: u32,
+    /// Number of removed lines.
+    pub deletions: u32,
+    /// Total changed lines.
+    pub lines_changed: u32,
+    /// Changed production source files.
+    pub production_files_changed: usize,
+    /// Changed test files.
+    pub test_files_changed: usize,
+    /// Unrelated top-level areas touched, sorted.
+    pub areas_touched: Vec<String>,
+    /// `PR-SCP-001` fired.
+    pub scope_creep: bool,
+    /// `PR-BRK-002` fired.
+    pub breaking_change: bool,
+    /// `PR-TST-003` fired.
+    pub missing_tests: bool,
+}
+
 /// The complete JSON document printed by `coderadar scan`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
@@ -113,6 +140,9 @@ pub struct ScanReport {
     pub session: SessionReport,
     /// Findings, sorted by file/line/rule for deterministic output.
     pub findings: Vec<FindingReport>,
+    /// Pull Request hygiene, present only for a `staged_diff` scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_hygiene: Option<PrHygieneReport>,
 }
 
 impl ScanReport {
@@ -158,7 +188,25 @@ impl ScanReport {
                 },
             },
             findings: session.findings.iter().map(finding_report).collect(),
+            pr_hygiene: outcome.pull_request.as_ref().map(pr_hygiene_report),
         }
+    }
+}
+
+/// Map the Pull Request hygiene assessment into its boundary DTO.
+fn pr_hygiene_report(hygiene: &PullRequestHygiene) -> PrHygieneReport {
+    PrHygieneReport {
+        base: hygiene.base.clone(),
+        files_changed: hygiene.files_changed,
+        additions: hygiene.additions,
+        deletions: hygiene.deletions,
+        lines_changed: hygiene.lines_changed,
+        production_files_changed: hygiene.production_files_changed,
+        test_files_changed: hygiene.test_files_changed,
+        areas_touched: hygiene.areas_touched.clone(),
+        scope_creep: hygiene.scope_creep,
+        breaking_change: hygiene.breaking_change,
+        missing_tests: hygiene.missing_tests,
     }
 }
 
@@ -208,6 +256,7 @@ mod tests {
             files_scanned: 2,
             ast_chunks: 5,
             module_chunks: 2,
+            pull_request: None,
         }
     }
 
@@ -222,7 +271,7 @@ mod tests {
 
         assert_eq!(value["tool"]["name"], "coderadar");
         assert_eq!(value["tool"]["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(value["ruleset_version"], "2026.1.0-strict");
+        assert_eq!(value["ruleset_version"], "2026.8.0-pr");
         assert_eq!(value["layer_map_source"], "config_file");
 
         assert_eq!(value["scan"]["files_scanned"], 2);

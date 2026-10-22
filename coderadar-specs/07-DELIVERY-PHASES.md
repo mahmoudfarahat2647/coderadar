@@ -15,7 +15,7 @@
 | 5 | Jev Tier 1 + privacy layer | 4–5 d | Real Jev results match mock schema; secrets redacted |
 | 6 | Diff modal, safe patching, SQLite history | 5–6 d | Patch safety tests pass; history trend visible |
 | 7 | Hardening, packaging, release v1.0 | 4–5 d | Engine gate verified in CI; clean-machine install on each OS is the remaining human step (draft release) |
-| 8 | Post-MVP (v1.1) | later | PR mode + Tier 2 auto-fix |
+| 8 | Post-MVP (v1.1) | later | PR mode + Tier 2 auto-fix + signed OTA rules |
 
 **Total MVP (phases 0–7): about 31–41 focused days.**
 
@@ -113,11 +113,15 @@
 
 **Gate:** clean-machine install on each OS; full scan → fix → history works. → PARTIAL — **(1) Verified by the machine (the engine half):** scan → deterministic fix → history → Markdown export is covered by `tests/patch_safety.rs` (9 cases), `tests/patch_flow.rs` (4), `tests/scan_history.rs` (9), `tests/cli.rs` (5 export cases), `crates/coderadar-domain/tests/patch.rs` (11), `crates/coderadar-usecases/src/fixes.rs` (12) and the trend-geometry invariant blocks; the `architecture`, `security` and `performance` CI jobs are green; the desktop application starts again after the `tauri-plugin-dialog` 2.8 configuration fix (D-1); and the draft release carries the artefacts produced by `.github/workflows/release.yml` — Windows (`.msi` + `.exe`), macOS (aarch64 + x86_64 `.dmg`), Linux (`.deb` + `.AppImage`) and `SHA256SUMS.txt`. **(2) Still open (the human half):** the clean-machine install on each target OS, which is the human action of this gate and has not been performed on any of them — macOS and Linux cannot be executed from a single Windows machine, and a Windows clean-machine install has not been performed either. **(3) Why a draft release exists:** it holds the installers so that this clean-machine install can be run before the release is published *(CR-SPEC-15 §8)*.
 
-## Phase 8 — Post-MVP (v1.1+)
-- Git Changeset engine and PR Hygiene scorecard (`PR-*` rules)
-- Tier 2 auto-fix via Ollama or a free-tier cloud LLM
-- Signed OTA rule updates (Ed25519)
-- Then v1.5/v2.0: PR auto-commenter, rule builder, team sync, IDE extensions
+## Phase 8 — Post-MVP (v1.1+) — (see `16-PHASE-8-POST-MVP-PR-HYGIENE-TIER2-OTA.md`)
+**Goal:** review a staged pull request, generate fixes the templates cannot produce, and update rules without a new binary.
+
+- [x] Git Changeset engine and PR Hygiene scorecard (`PR-SCP-001`, `PR-BRK-002`, `PR-TST-003`)
+- [x] Tier 2 auto-fix via Ollama or a free-tier cloud LLM
+- [x] Signed OTA rule updates (Ed25519)
+- [ ] Then v1.5/v2.0: PR auto-commenter, rule builder, team sync, IDE extensions
+
+**Gate:** CI green; staged fixture scan emits the expected `PR-*` findings; Tier 2 rejects empty/oversized/unchanged drafts and cloud secrets; tampered manifests are refused and valid ones activate. — PARTIAL — engine/UI implemented and covered by CR-SPEC-16 §7; the live Ollama and Gemini runs remain the human step.
 
 ---
 

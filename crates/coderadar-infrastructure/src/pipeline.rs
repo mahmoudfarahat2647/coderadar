@@ -11,8 +11,10 @@
 //! * findings are deduplicated by id and sorted deterministically, because the
 //!   parallel walk delivers files in nondeterministic order.
 //!
-//! `git_changeset`-scoped rules are not requested in `FullScan` mode; a
-//! `StagedDiff` scan is rejected until the Phase 8 Git engine exists.
+//! `git_changeset`-scoped rules are not requested in `FullScan` mode. A
+//! `StagedDiff` run scans only the staged files and then evaluates the `PR-*`
+//! rules through the [`AssessPullRequest`] use case, so the report carries both
+//! the code findings and the Pull Request hygiene scorecard.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -20,9 +22,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use coderadar_domain::{
-    ChunkKind, CodeChunk, DomainError, Finding, RuleScope, RuleSpec, ScanMode, ScanSession,
+    ChunkKind, CodeChunk, DomainError, Finding, PullRequestHygiene, RuleScope, RuleSpec, ScanMode,
+    ScanSession,
 };
-use coderadar_usecases::{ChunkSink, ProjectScannerGateway, SemanticRuleEvaluator};
+use coderadar_usecases::{
+    AssessPullRequest, ChangesetGateway, ChunkSink, ProjectScannerGateway, SemanticRuleEvaluator,
+};
 
 use crate::executor::block_on;
 use crate::scanner::ParallelFileScanner;
@@ -38,6 +43,8 @@ pub struct ScanOutcome {
     pub ast_chunks: usize,
     /// Number of whole-file chunks evaluated.
     pub module_chunks: usize,
+    /// Pull Request hygiene, present only for a `StagedDiff` run.
+    pub pull_request: Option<PullRequestHygiene>,
 }
 
 /// Mutable state shared by every scanner worker thread.
@@ -200,6 +207,7 @@ pub struct ScanPipeline {
     rules: Vec<RuleSpec>,
     ast_batch_size: usize,
     module_batch_size: usize,
+    changesets: Option<Arc<dyn ChangesetGateway>>,
 }
 
 impl ScanPipeline {
@@ -215,7 +223,15 @@ impl ScanPipeline {
             rules,
             ast_batch_size: Self::DEFAULT_AST_BATCH_SIZE,
             module_batch_size: Self::DEFAULT_MODULE_BATCH_SIZE,
+            changesets: None,
         }
+    }
+
+    /// Attach the Git changeset gateway used by a `StagedDiff` run.
+    #[must_use]
+    pub fn with_changeset_gateway(mut self, gateway: Arc<dyn ChangesetGateway>) -> Self {
+        self.changesets = Some(gateway);
+        self
     }
 
     /// Override the AST batch size (tests use small batches).
@@ -237,27 +253,61 @@ impl ScanPipeline {
     where
         F: Fn(&[Finding]) + Send + Sync + 'static,
     {
-        self.run_internal(root, Some(Arc::new(on_findings)))
+        self.run_internal(root, ScanMode::FullScan, Some(Arc::new(on_findings)))
     }
 
-    /// Run a full scan of `root`.
+    /// Run a full scan of `root`, notifying `on_findings` for each streamed batch.
     ///
     /// `git_changeset`-scoped rules are excluded from a `FullScan`: they need
-    /// the Git diff of the changeset, which the Phase 8 engine provides; the
-    /// pipeline simply never requests them here.
+    /// the Git diff of the changeset, which the pipeline only reads for a
+    /// `StagedDiff` run.
     ///
     /// # Errors
     /// Returns [`DomainError`] when the root is invalid or an evaluator fails.
     pub fn run(&self, root: &Path) -> Result<ScanOutcome, DomainError> {
-        self.run_internal(root, None)
+        self.run_internal(root, ScanMode::FullScan, None)
+    }
+
+    /// Run a scan of `root` in `mode`, notifying `on_findings` per batch.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the root is invalid, no changeset gateway
+    /// is configured for a `StagedDiff` run, the Git changeset cannot be read,
+    /// or an evaluator fails.
+    pub fn run_mode_with_callback<F>(
+        &self,
+        root: &Path,
+        mode: ScanMode,
+        on_findings: F,
+    ) -> Result<ScanOutcome, DomainError>
+    where
+        F: Fn(&[Finding]) + Send + Sync + 'static,
+    {
+        self.run_internal(root, mode, Some(Arc::new(on_findings)))
+    }
+
+    /// Run a scan of `root` in `mode`.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the root is invalid, no changeset gateway
+    /// is configured for a `StagedDiff` run, the Git changeset cannot be read,
+    /// or an evaluator fails.
+    pub fn run_mode(&self, root: &Path, mode: ScanMode) -> Result<ScanOutcome, DomainError> {
+        self.run_internal(root, mode, None)
     }
 
     fn run_internal(
         &self,
         root: &Path,
+        mode: ScanMode,
         finding_sink: Option<FindingBatchCallback>,
     ) -> Result<ScanOutcome, DomainError> {
         let started_ms = now_ms();
+        if mode == ScanMode::StagedDiff && self.changesets.is_none() {
+            return Err(DomainError::invariant(
+                "a staged scan requires a configured Git changeset gateway",
+            ));
+        }
 
         let ast_rules: Vec<RuleSpec> = self
             .rules
@@ -282,8 +332,7 @@ impl ScanPipeline {
         );
 
         let root_str = root.to_string_lossy().to_string();
-        let scan_result =
-            ParallelFileScanner::new().stream_project_chunks(&root_str, ScanMode::FullScan, &sink);
+        let scan_result = ParallelFileScanner::new().stream_project_chunks(&root_str, mode, &sink);
 
         // The scanner collapses every sink failure into a generic external
         // error, so the engine's real error must be read from the sink first.
@@ -297,7 +346,6 @@ impl ScanPipeline {
 
         sink.flush()?;
 
-        let mut deduped: BTreeMap<String, Finding> = BTreeMap::new();
         let (ast_chunks, module_chunks, buffered) = {
             let mut state = sink.lock_state()?;
             (
@@ -306,7 +354,22 @@ impl ScanPipeline {
                 std::mem::take(&mut state.findings),
             )
         };
-        for finding in buffered {
+
+        let mut pull_request = None;
+        let mut all_findings = buffered;
+        if mode == ScanMode::StagedDiff {
+            let gateway = self.changesets.as_ref().ok_or_else(|| {
+                DomainError::invariant("a staged scan requires a configured Git changeset gateway")
+            })?;
+            let assessment = block_on(
+                AssessPullRequest::new(Arc::clone(gateway)).assess(&root_str, &self.rules),
+            )?;
+            all_findings.extend(assessment.findings);
+            pull_request = Some(assessment.hygiene);
+        }
+
+        let mut deduped: BTreeMap<String, Finding> = BTreeMap::new();
+        for finding in all_findings {
             deduped.entry(finding.id.clone()).or_insert(finding);
         }
 
@@ -328,13 +391,9 @@ impl ScanPipeline {
 
         let finished_ms = now_ms();
         let root_dir = crate::workspace_guard::canonical_root(root);
-        let mut session = ScanSession::new(
-            format!("scan-{started_ms}"),
-            root_dir,
-            ScanMode::FullScan,
-            started_ms,
-        )
-        .with_files_scanned(module_chunks);
+        let mut session =
+            ScanSession::new(format!("scan-{started_ms}"), root_dir, mode, started_ms)
+                .with_files_scanned(module_chunks);
         for finding in findings {
             session.push(finding);
         }
@@ -345,6 +404,7 @@ impl ScanPipeline {
             files_scanned: module_chunks,
             ast_chunks,
             module_chunks,
+            pull_request,
         })
     }
 }

@@ -13,16 +13,18 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use coderadar_domain::DomainError;
+use coderadar_domain::{DomainError, ScanMode};
 use coderadar_usecases::{ScanHistoryRepository, SemanticRuleEvaluator};
 
 use crate::executor::block_on;
+use crate::git_changeset::GitChangesetReader;
 use crate::layer_map::LayerMap;
 use crate::mock::MockRuleEvaluator;
 use crate::pipeline::{ScanOutcome, ScanPipeline};
 use crate::report::ScanReport;
 use crate::router::RuleEngineRouter;
 use crate::rules_manifest::RuleManifest;
+use crate::rules_ota::RulesStore;
 use crate::throttler::{FindingBatch, FindingThrottler};
 
 /// Run a full scan of `root` over the offline Mock engine.
@@ -34,6 +36,15 @@ pub fn scan_project(root: &Path) -> Result<ScanReport, DomainError> {
     scan_project_with(root, Arc::new(MockRuleEvaluator::new()))
 }
 
+/// Run a scan of `root` in `mode` over the offline Mock engine.
+///
+/// # Errors
+/// Returns [`DomainError`] when the root path is invalid, the manifest fails
+/// to load, or the scan pipeline aborts.
+pub fn scan_project_mode(root: &Path, mode: ScanMode) -> Result<ScanReport, DomainError> {
+    scan_project_with_mode(root, Arc::new(MockRuleEvaluator::new()), mode)
+}
+
 /// Run a full scan of `root` over an injected semantic engine.
 ///
 /// # Errors
@@ -43,13 +54,27 @@ pub fn scan_project_with(
     root: &Path,
     semantic: Arc<dyn SemanticRuleEvaluator>,
 ) -> Result<ScanReport, DomainError> {
-    let manifest = RuleManifest::embedded()?;
+    scan_project_with_mode(root, semantic, ScanMode::FullScan)
+}
+
+/// Run a scan of `root` in `mode` over an injected semantic engine.
+///
+/// # Errors
+/// Returns [`DomainError`] when the root path is invalid, the manifest fails
+/// to load, or the scan pipeline aborts.
+pub fn scan_project_with_mode(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    mode: ScanMode,
+) -> Result<ScanReport, DomainError> {
+    let active = RulesStore::new(RulesStore::default_data_dir()).active_or_embedded();
+    let manifest = active.manifest;
     let layer_map = LayerMap::load(root);
     let source = layer_map.source();
     let router = RuleEngineRouter::new(Arc::new(layer_map)).with_semantic(semantic);
-    let pipeline = ScanPipeline::new(Arc::new(router), manifest.rules.clone());
+    let pipeline = build_pipeline(Arc::new(router), &manifest);
     let started = Instant::now();
-    let outcome = pipeline.run(root)?;
+    let outcome = pipeline.run_mode(root, mode)?;
     let duration_ms = started.elapsed().as_millis() as u64;
     Ok(ScanReport::from_scan(
         &outcome,
@@ -57,6 +82,15 @@ pub fn scan_project_with(
         source,
         duration_ms,
     ))
+}
+
+/// Build the pipeline with the Git changeset gateway every scan needs.
+fn build_pipeline(
+    evaluator: Arc<dyn coderadar_usecases::SemanticRuleEvaluator>,
+    manifest: &RuleManifest,
+) -> ScanPipeline {
+    ScanPipeline::new(evaluator, manifest.rules.clone())
+        .with_changeset_gateway(Arc::new(GitChangesetReader::new()))
 }
 
 /// Run a full scan of `root` over the offline Mock engine, streaming batched
@@ -96,7 +130,26 @@ pub fn scan_project_streaming_with<F>(
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
-    run_streaming(root, semantic, flush_interval, on_batch).map(|(_, report)| report)
+    scan_project_streaming_with_mode(root, semantic, flush_interval, ScanMode::FullScan, on_batch)
+}
+
+/// Run a scan of `root` in `mode` over an injected semantic engine, streaming
+/// batched findings to `on_batch`.
+///
+/// # Errors
+/// Returns [`DomainError`] when the root path is invalid, the manifest fails
+/// to load, or the scan pipeline aborts.
+pub fn scan_project_streaming_with_mode<F>(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    flush_interval: Duration,
+    mode: ScanMode,
+    on_batch: F,
+) -> Result<ScanReport, DomainError>
+where
+    F: FnMut(FindingBatch) + Send + 'static,
+{
+    run_streaming(root, semantic, flush_interval, mode, on_batch).map(|(_, report)| report)
 }
 
 /// Run a full scan of `root` and persist the finished session in `history`.
@@ -119,7 +172,34 @@ pub fn scan_project_streaming_with_history<F>(
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
-    let (outcome, report) = run_streaming(root, semantic, flush_interval, on_batch)?;
+    scan_project_streaming_with_history_mode(
+        root,
+        semantic,
+        flush_interval,
+        ScanMode::FullScan,
+        on_batch,
+        history,
+    )
+}
+
+/// Run a scan of `root` in `mode` and persist the finished session in `history`.
+///
+/// # Errors
+/// Returns [`DomainError`] when the root path is invalid, the manifest fails
+/// to load, or the scan pipeline aborts. A session that cannot be persisted
+/// is only logged: the report of the finished scan is still returned.
+pub fn scan_project_streaming_with_history_mode<F>(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    flush_interval: Duration,
+    mode: ScanMode,
+    on_batch: F,
+    history: &dyn ScanHistoryRepository,
+) -> Result<ScanReport, DomainError>
+where
+    F: FnMut(FindingBatch) + Send + 'static,
+{
+    let (outcome, report) = run_streaming(root, semantic, flush_interval, mode, on_batch)?;
     if let Err(error) = block_on(history.save_scan_session(&outcome.session)) {
         eprintln!("[coderadar] the scan session cannot be persisted: {error}");
     }
@@ -131,21 +211,23 @@ fn run_streaming<F>(
     root: &Path,
     semantic: Arc<dyn SemanticRuleEvaluator>,
     flush_interval: Duration,
+    mode: ScanMode,
     on_batch: F,
 ) -> Result<(ScanOutcome, ScanReport), DomainError>
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
-    let manifest = RuleManifest::embedded()?;
+    let active = RulesStore::new(RulesStore::default_data_dir()).active_or_embedded();
+    let manifest = active.manifest;
     let layer_map = LayerMap::load(root);
     let source = layer_map.source();
     let router = RuleEngineRouter::new(Arc::new(layer_map)).with_semantic(semantic);
-    let pipeline = ScanPipeline::new(Arc::new(router), manifest.rules.clone());
+    let pipeline = build_pipeline(Arc::new(router), &manifest);
     let started = Instant::now();
 
     let (sender, handle) = FindingThrottler::start(flush_interval, on_batch);
     let sender_clone = sender.clone();
-    let outcome = pipeline.run_with_callback(root, move |findings| {
+    let outcome = pipeline.run_mode_with_callback(root, mode, move |findings| {
         sender_clone.send_batch(findings);
     })?;
     drop(sender);
