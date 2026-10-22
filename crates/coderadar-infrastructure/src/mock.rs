@@ -338,8 +338,14 @@ fn security_jwt(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
 /// `SEC-XSS-004`: direct HTML sink writes.
 fn security_xss(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
     scan_chunk_lines(rule, chunks, ChunkKind::AstWindow, |_chunk, _line, text| {
-        XSS_SINK_RE.is_match(text).then_some((DESC_XSS, 0.7))
+        (XSS_SINK_RE.is_match(text) && !is_sanitized(text)).then_some((DESC_XSS, 0.7))
     })
+}
+
+/// `SEC-XSS-004`: a sink line routed through a sanitizer is not raw HTML.
+fn is_sanitized(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("dompurify") || lower.contains("sanitiz")
 }
 
 /// `ARCH-SRP-002`: one oversized class mixing two or more concern groups.
@@ -450,17 +456,48 @@ fn edge_timeout(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
     )
 }
 
-/// `PERF-NPO-001`: database calls executed inside an iteration loop.
+/// `PERF-NPO-001`: database calls lexically **inside** an iteration loop.
+///
+/// Calls on the loop-header line itself (`ids.forEach((id) => db.query(q))`)
+/// count as inside; a headerless callback body spread over lines without
+/// braces is conservatively not flagged (precision first). The tracker is
+/// best-effort: braces inside string literals skew it like in every
+/// line-scoped heuristic here.
 fn performance_n_plus_one(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
-    scan_chunk_lines_ctx(
-        rule,
-        chunks,
-        ChunkKind::AstWindow,
-        |chunk| LOOP_RE.is_match(&chunk.content),
-        |in_loop, _chunk, _line, text| {
-            (*in_loop && DB_CALL_RE.is_match(text)).then_some((DESC_NPO, 0.55))
-        },
-    )
+    let mut findings = Vec::new();
+    for chunk in chunks_of_kind(chunks, ChunkKind::AstWindow) {
+        let mut depth: i64 = 0;
+        // Brace depth below which each still-open loop body sits: a line is
+        // inside that body while the running depth is strictly deeper.
+        let mut loop_entries: Vec<i64> = Vec::new();
+        for (line, text) in chunk_lines(chunk) {
+            let depth_before = depth;
+            let loop_header = LOOP_RE.is_match(text);
+            let inside = loop_entries.iter().any(|&entry| depth > entry);
+            if DB_CALL_RE.is_match(text) && (inside || loop_header) {
+                findings.push(build_finding(
+                    rule,
+                    &chunk.file_path,
+                    line,
+                    line,
+                    DESC_NPO,
+                    0.55,
+                ));
+            }
+            depth += brace_delta(text);
+            loop_entries.retain(|&entry| depth > entry);
+            if loop_header {
+                loop_entries.push(depth_before);
+            }
+        }
+    }
+    findings
+}
+
+/// Net brace-depth change of one source line (string literals included: an
+/// unbalanced brace inside a literal skews the best-effort tracker).
+fn brace_delta(text: &str) -> i64 {
+    text.matches('{').count() as i64 - text.matches('}').count() as i64
 }
 
 /// `PERF-HDL-002`: handles opened without a guaranteed release clause.
@@ -482,6 +519,11 @@ fn performance_handle(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
 }
 
 /// `PERF-EVT-003`: listeners and effects that are never detached.
+///
+/// A chunk that carries a `removeEventListener` or an effect cleanup return
+/// (`return () =>`) is considered detached: both branches of the rule stay
+/// silent, because a subscription paired with a cleanup is the pattern the
+/// rule asks for.
 fn performance_events(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
     scan_chunk_lines_ctx(
         rule,
@@ -494,10 +536,13 @@ fn performance_events(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
             )
         },
         |&(detached, cleaned_up), _chunk, _line, text| {
-            if detached && ADD_LISTENER_RE.is_match(text) {
-                return Some((DESC_EVT_ADD, 0.6));
+            if !detached || cleaned_up {
+                return None;
             }
-            (detached && !cleaned_up && EFFECT_RE.is_match(text)).then_some((DESC_EVT_EFFECT, 0.5))
+            ADD_LISTENER_RE
+                .is_match(text)
+                .then_some((DESC_EVT_ADD, 0.6))
+                .or_else(|| EFFECT_RE.is_match(text).then_some((DESC_EVT_EFFECT, 0.5)))
         },
     )
 }
@@ -710,6 +755,22 @@ mod tests {
             1,
             "el.innerHTML = html;\n",
         );
+        let findings = evaluate_one("SEC-XSS-004", vec![chunk]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn sec_xss_ignores_sanitized_sink() {
+        let content = "el.innerHTML = DOMPurify.sanitize(html);\n";
+        let chunk = CodeChunk::new("src/ui/Profile.tsx", "typescript", 21, 22, content);
+        let findings = evaluate_one("SEC-XSS-004", vec![chunk]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn sec_xss_ignores_sanitized_props() {
+        let content = "return <div dangerouslySetInnerHTML={{ __html: sanitize(raw) }} />;\n";
+        let chunk = CodeChunk::new("src/ui/Profile.tsx", "typescript", 4, 4, content);
         let findings = evaluate_one("SEC-XSS-004", vec![chunk]);
         assert!(findings.is_empty());
     }
@@ -947,6 +1008,32 @@ mod tests {
     }
 
     #[test]
+    fn perf_npo_ignores_db_call_after_the_loop() {
+        let content = concat!(
+            "for (const id of ids) {\n",
+            "  total += id.length;\n",
+            "}\n",
+            "const first = await db.query(\"select\");\n",
+        );
+        let chunk = CodeChunk::new("src/repo.ts", "typescript", 1, 4, content);
+        let findings = evaluate_one("PERF-NPO-001", vec![chunk]);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn perf_npo_flags_db_call_on_the_loop_header_line() {
+        let chunk = CodeChunk::new(
+            "src/repo.ts",
+            "typescript",
+            7,
+            7,
+            "ids.forEach((id) => db.query(q));\n",
+        );
+        let findings = evaluate_one("PERF-NPO-001", vec![chunk]);
+        assert_single_finding(&findings, "PERF-NPO-001", "src/repo.ts", 7, 0.55);
+    }
+
+    #[test]
     fn perf_hdl_flags_unreleased_handle() {
         let content = "const fd = fs.open(path, \"r\");\nconst data = readSync(fd);\n";
         let chunk = CodeChunk::file_module("src/io/files.ts", "typescript", 2, content);
@@ -1008,6 +1095,23 @@ mod tests {
         let chunk = CodeChunk::new("src/ui/Panel.tsx", "typescript", 1, 4, content);
         let findings = evaluate_one("PERF-EVT-003", vec![chunk]);
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn perf_evt_ignores_listener_with_cleanup_return() {
+        let content = concat!(
+            "useEffect(() => {\n",
+            "  window.addEventListener(\"resize\", onResize);\n",
+            "  return () => element.release();\n",
+            "}, []);\n",
+        );
+        assert!(
+            CLEANUP_RETURN_RE.is_match(content),
+            "the fixture must carry the cleanup return"
+        );
+        let chunk = CodeChunk::new("src/ui/Panel.tsx", "typescript", 1, 4, content);
+        let findings = evaluate_one("PERF-EVT-003", vec![chunk]);
+        assert!(findings.is_empty(), "{:#?}", findings);
     }
 
     #[test]
