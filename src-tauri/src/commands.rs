@@ -11,11 +11,10 @@ use coderadar_domain::ScanMode;
 use coderadar_infrastructure::{
     block_on, is_semantic_rule, mask_api_key, resolve_gemini_key,
     scan_project_streaming_with_history_mode, write_markdown_report, CredentialStore,
-    EngineStatusSnapshot, FindingBatch, GeminiFixProvider, JevConfig,
-    KeyringCredentialStore, OllamaFixProvider, RulesStore, SafePatchApplier,
-    ScanReport, SemanticEngine, SqliteScanHistoryRepository, DEFAULT_GEMINI_MODEL,
-    DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL, GEMINI_MODEL_ENV, OLLAMA_ENDPOINT_ENV,
-    OLLAMA_MODEL_ENV, TIER0_OWNED_IDS,
+    EngineStatusSnapshot, FindingBatch, GeminiFixProvider, JevConfig, KeyringCredentialStore,
+    OllamaFixProvider, RulesStore, SafePatchApplier, ScanReport, SemanticEngine,
+    SqliteScanHistoryRepository, DEFAULT_GEMINI_MODEL, DEFAULT_OLLAMA_ENDPOINT,
+    DEFAULT_OLLAMA_MODEL, GEMINI_MODEL_ENV, OLLAMA_ENDPOINT_ENV, OLLAMA_MODEL_ENV, TIER0_OWNED_IDS,
 };
 use coderadar_usecases::{
     FixFinding, GenerateFix, GenerativeFixProvider, PatchApplier, PreparePatch,
@@ -364,8 +363,7 @@ fn tier2_status() -> Tier2StatusPayload {
         std::env::var(OLLAMA_ENDPOINT_ENV).unwrap_or_else(|_| DEFAULT_OLLAMA_ENDPOINT.to_string());
     let cloud_model =
         std::env::var(GEMINI_MODEL_ENV).unwrap_or_else(|_| DEFAULT_GEMINI_MODEL.to_string());
-    let cloud_key_configured =
-        resolve_gemini_key(&KeyringCredentialStore::gemini()).is_some();
+    let cloud_key_configured = resolve_gemini_key(&KeyringCredentialStore::gemini()).is_some();
 
     Tier2StatusPayload {
         local_provider: "ollama",
@@ -447,9 +445,7 @@ pub async fn generate_fix(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO
 
 fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, String> {
     let provider: Arc<dyn GenerativeFixProvider> = match request.provider.as_str() {
-        "ollama" => Arc::new(
-            OllamaFixProvider::from_env().map_err(|error| error.to_string())?,
-        ),
+        "ollama" => Arc::new(OllamaFixProvider::from_env().map_err(|error| error.to_string())?),
         "gemini" => {
             if !request.allow_cloud {
                 return Err(
@@ -472,7 +468,8 @@ fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, S
         }
     };
 
-    let reader: Arc<dyn SourceFileReader> = Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
+    let reader: Arc<dyn SourceFileReader> =
+        Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
     let generator = GenerateFix::new(provider, Arc::clone(&reader));
     let finding = FixFinding {
         file_path: request.file_path.clone(),
