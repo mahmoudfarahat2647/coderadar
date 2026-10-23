@@ -10,6 +10,7 @@
 #![deny(missing_docs)]
 
 mod category;
+mod changeset;
 mod chunk;
 mod error;
 mod finding;
@@ -20,6 +21,10 @@ mod score;
 mod severity;
 
 pub use category::FindingCategory;
+pub use changeset::{
+    is_code_path, is_public_api_removal, is_test_path, Changeset, FileChange, PrViolation,
+    PullRequestHygiene, SCOPE_CREEP_AREA_THRESHOLD, SCOPE_CREEP_LINE_THRESHOLD,
+};
 pub use chunk::{ChunkKind, CodeChunk, RuleEvaluationResult};
 pub use error::DomainError;
 pub use finding::Finding;

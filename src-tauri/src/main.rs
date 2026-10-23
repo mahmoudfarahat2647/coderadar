@@ -23,7 +23,11 @@ fn main() {
             commands::preview_patch,
             commands::apply_patch,
             commands::get_scan_history,
-            commands::export_report
+            commands::export_report,
+            commands::get_tier2_status,
+            commands::store_tier2_key,
+            commands::clear_tier2_key,
+            commands::generate_fix
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

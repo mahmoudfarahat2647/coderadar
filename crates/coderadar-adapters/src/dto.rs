@@ -29,6 +29,10 @@ pub struct FindingDTO {
     pub title: String,
     /// Detailed explanation of the finding.
     pub description: String,
+    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
+    pub engine: String,
+    /// Evaluator confidence in `[0.0, 1.0]`.
+    pub confidence: f32,
     /// Polar radius for the radar.
     pub radar_r: f32,
     /// Polar angle (degrees) for the radar.
@@ -49,6 +53,8 @@ impl FindingDTO {
             cwe: finding.cwe.clone(),
             title: finding.title.clone(),
             description: finding.description.clone(),
+            engine: finding.engine.as_str().to_string(),
+            confidence: finding.confidence,
             radar_r: coordinate.radius,
             radar_theta: coordinate.angle_deg,
         }
@@ -258,6 +264,11 @@ pub struct HistoryPointDTO {
     pub medium: usize,
     /// Number of low findings.
     pub low: usize,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
+    /// Engine label recorded for the session (`mock` | `jev` |
+    /// `mock_fallback`), `None` when not declared.
+    pub engine_mode: Option<String>,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
 }
@@ -276,6 +287,8 @@ impl HistoryPointDTO {
             high: summary.high,
             medium: summary.medium,
             low: summary.low,
+            suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
+            engine_mode: summary.engine_mode.clone(),
             compliance_percent: summary.compliance_percent,
         }
     }

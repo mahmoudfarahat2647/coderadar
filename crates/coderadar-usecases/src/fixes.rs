@@ -5,7 +5,9 @@
 //! applied. Templates are deliberately conservative - when the pattern does not
 //! match exactly, no edit is produced at all.
 //!
-//! LLM generated fixes are explicitly out of scope (Phase 8).
+//! LLM generated fixes live in [`crate::tier2`] (Phase 8) and are never a
+//! template: they return a whole-file draft that must pass the same
+//! review-before-apply path.
 
 use std::sync::Arc;
 

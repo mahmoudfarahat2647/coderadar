@@ -89,13 +89,20 @@ impl FromStr for RuleScope {
     }
 }
 
-impl fmt::Display for EvaluationEngine {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl EvaluationEngine {
+    /// Canonical token used across boundaries.
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Tier0Static => "tier0",
             Self::Tier1Semantic => "tier1",
             Self::MockHeuristic => "mock",
-        })
+        }
+    }
+}
+
+impl fmt::Display for EvaluationEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

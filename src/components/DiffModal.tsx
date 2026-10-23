@@ -7,14 +7,19 @@ import {
   ShieldAlert,
   AlertTriangle,
   Loader2,
+  Sparkles,
+  Cpu,
+  Cloud,
 } from "lucide-react";
-import { PatchOutcomeDTO, PatchPreviewDTO } from "../types";
-import { applyPatch } from "../services/tauri";
+import { FindingDTO, PatchOutcomeDTO, PatchPreviewDTO, Tier2Provider } from "../types";
+import { applyPatch, generateFix } from "../services/tauri";
 
 interface DiffModalProps {
   open: boolean;
   preview: PatchPreviewDTO | null;
   rootPath: string;
+  finding: FindingDTO | null;
+  onPreviewGenerated: (preview: PatchPreviewDTO) => void;
   onClose: () => void;
   onApplied: (outcome: PatchOutcomeDTO) => void;
   onError: (message: string) => void;
@@ -47,6 +52,8 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   open,
   preview,
   rootPath,
+  finding,
+  onPreviewGenerated,
   onClose,
   onApplied,
   onError,
@@ -54,6 +61,9 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<PatchOutcomeDTO | null>(null);
+  const [provider, setProvider] = useState<Tier2Provider>("ollama");
+  const [allowCloud, setAllowCloud] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   // Keep the latest close handler without re-registering the key listener.
   const onCloseRef = useRef(onClose);
@@ -73,6 +83,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   useEffect(() => {
     setCopied(false);
     setBusy(false);
+    setGenerating(false);
     setOutcome(null);
   }, [preview]);
 
@@ -115,6 +126,41 @@ export const DiffModal: React.FC<DiffModalProps> = ({
       onError(typeof err === "string" ? err : String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (generating || !finding) return;
+    if (provider === "gemini" && !allowCloud) {
+      onError(
+        "Cloud fix generation needs explicit consent: review the privacy notice and tick the consent box first."
+      );
+      return;
+    }
+    setGenerating(true);
+    try {
+      const generated = await generateFix({
+        root_path: rootPath,
+        file_path: preview.file_path,
+        rule_id: preview.rule_id,
+        title: finding.title,
+        description: finding.description,
+        line_start: finding.line_start,
+        line_end: finding.line_end,
+        provider,
+        allow_cloud: provider === "gemini" && allowCloud,
+      });
+      if (!generated) {
+        onError(
+          "Tier 2 fix generation is only available in the CodeRadar desktop app (Tauri runtime)."
+        );
+        return;
+      }
+      onPreviewGenerated(generated);
+    } catch (err) {
+      onError(typeof err === "string" ? err : String(err));
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -184,19 +230,101 @@ export const DiffModal: React.FC<DiffModalProps> = ({
             </div>
           )}
 
-          {/* No deterministic fix available for this rule */}
+          {/* No deterministic fix: offer a Tier 2 (LLM) proposal instead */}
           {!hasProposal && (
-            <div className="p-3 rounded-lg bg-status-medium/10 border border-status-medium/30 text-[11px] text-text-secondary">
-              <div className="flex items-center space-x-1.5 font-semibold text-status-medium mb-1">
-                <AlertTriangle className="w-3.5 h-3.5" />
-                <span>No Deterministic Fix Exists For This Rule</span>
+            <div className="p-3 rounded-lg bg-status-medium/10 border border-status-medium/30 text-[11px] text-text-secondary space-y-3">
+              <div>
+                <div className="flex items-center space-x-1.5 font-semibold text-status-medium mb-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>No Deterministic Fix Exists For This Rule</span>
+                </div>
+                <p className="leading-relaxed">
+                  The remediation template does not match this code exactly, so no
+                  safe deterministic patch can be proposed. A Tier 2 model can
+                  generate one for review instead; nothing is written until you
+                  apply the resulting diff.
+                </p>
               </div>
-              <p className="leading-relaxed">
-                The remediation template does not match this code exactly, so no
-                safe patch can be proposed and nothing can be applied
-                automatically. LLM-generated fixes are scheduled for a later
-                phase.
-              </p>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="bg-surface-canvas border border-border-subtle rounded-lg p-0.5 flex items-center text-[11px]">
+                  <button
+                    onClick={() => setProvider("ollama")}
+                    disabled={generating}
+                    className={`px-2.5 py-1 rounded-md flex items-center space-x-1.5 transition-colors ${
+                      provider === "ollama"
+                        ? "bg-surface-elevated text-secondary font-semibold border border-border-subtle"
+                        : "text-text-muted hover:text-text-primary"
+                    }`}
+                  >
+                    <Cpu className="w-3.5 h-3.5" />
+                    <span>Local Ollama</span>
+                  </button>
+                  <button
+                    onClick={() => setProvider("gemini")}
+                    disabled={generating}
+                    className={`px-2.5 py-1 rounded-md flex items-center space-x-1.5 transition-colors ${
+                      provider === "gemini"
+                        ? "bg-surface-elevated text-secondary font-semibold border border-border-subtle"
+                        : "text-text-muted hover:text-text-primary"
+                    }`}
+                  >
+                    <Cloud className="w-3.5 h-3.5" />
+                    <span>Cloud Gemini</span>
+                  </button>
+                </div>
+
+                <span className="text-[10px] text-text-muted">
+                  {provider === "ollama"
+                    ? "Source stays on this machine."
+                    : "Only files that pass full secret redaction are sent."}
+                </span>
+              </div>
+
+              {provider === "gemini" && (
+                <label className="flex items-start space-x-2 p-2 rounded-md bg-surface-canvas border border-border-subtle cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={allowCloud}
+                    onChange={(e) => setAllowCloud(e.target.checked)}
+                    disabled={generating}
+                    className="mt-0.5"
+                  />
+                  <span className="text-[10px] leading-relaxed">
+                    I consent to sending this fully redacted file to the configured
+                    Gemini model. The backend refuses the request when the file
+                    contains any secret that cannot be redacted.
+                  </span>
+                </label>
+              )}
+
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] text-text-muted">
+                  The generated fix is validated against the on-disk file and shown
+                  as a reviewable diff.
+                </span>
+                <button
+                  onClick={handleGenerate}
+                  disabled={
+                    generating ||
+                    !finding ||
+                    (provider === "gemini" && !allowCloud)
+                  }
+                  className="px-3 py-1.5 rounded-md bg-secondary/15 border border-secondary/40 text-secondary hover:bg-secondary/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1.5 text-xs font-semibold shrink-0"
+                >
+                  {generating ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Generate Fix</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           )}
 
@@ -235,7 +363,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
               <div className="p-3 font-mono text-[11px] text-text-muted">
                 {hasProposal
                   ? "No textual diff available for this proposal."
-                  : "No diff available: no deterministic fix exists for this rule."}
+                  : "No diff yet: generate a Tier 2 fix above to preview one."}
               </div>
             ) : (
               <div className="min-w-max py-1 font-mono text-[11px] leading-relaxed">

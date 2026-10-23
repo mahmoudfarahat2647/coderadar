@@ -83,13 +83,10 @@ export const ScanBar: React.FC<ScanBarProps> = ({
                 ? "bg-surface-elevated text-secondary font-semibold border border-border-subtle"
                 : "text-text-muted hover:text-text-primary"
             }`}
-            title="Git Staged Diff scan is deferred to Phase 8"
+            title="Scan only the Git staged changes and score the pull request hygiene"
           >
             <GitCommit className="w-3.5 h-3.5" />
             <span>Git Staged Diff</span>
-            <span className="text-[9px] px-1 rounded bg-surface-panel text-text-muted border border-border-subtle">
-              P8
-            </span>
           </button>
         </div>
 

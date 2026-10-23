@@ -72,6 +72,9 @@ pub struct MarkdownReportInput {
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
+    /// Number of heuristic findings the precision floor dropped and which are
+    /// therefore only counted (`CR-SPEC-09 §5`).
+    pub suppressed_heuristic_findings: usize,
     /// The findings of the scan.
     pub findings: Vec<MarkdownFinding>,
 }
@@ -214,6 +217,10 @@ fn render_executive_summary(
     out.push_str(&format!(
         "| Average risk score | {} |\n",
         format_score(mean_risk(findings))
+    ));
+    out.push_str(&format!(
+        "| Suppressed low-precision findings | {} |\n",
+        input.suppressed_heuristic_findings
     ));
     out.push('\n');
 
@@ -450,7 +457,7 @@ mod tests {
         MarkdownReportInput {
             tool_name: "coderadar".to_string(),
             tool_version: "1.0.0".to_string(),
-            ruleset_version: "2026.1.0-strict".to_string(),
+            ruleset_version: "2026.8.0-pr".to_string(),
             layer_map_source: "config_file".to_string(),
             session_id: "scan-1".to_string(),
             root_dir: "/tmp/root".to_string(),
@@ -462,6 +469,7 @@ mod tests {
             module_chunks: 12,
             duration_ms: 500,
             compliance_percent: 75,
+            suppressed_heuristic_findings: 3,
             findings,
         }
     }
@@ -486,6 +494,9 @@ mod tests {
         assert!(report.markdown.contains("`SEC-TOK-002`"));
         assert!(report.markdown.contains("`src/api.ts:10`"));
         assert!(report.markdown.contains("CWE-798"));
+        assert!(report
+            .markdown
+            .contains("| Suppressed low-precision findings | 3 |"));
         assert_eq!(report.finding_count, 1);
         assert_eq!(report.byte_len, report.markdown.len());
     }

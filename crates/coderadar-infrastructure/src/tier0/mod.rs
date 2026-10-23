@@ -73,7 +73,10 @@ impl SemanticRuleEvaluator for Tier0RuleEvaluator {
                         SEC_TOK_002 => secrets::evaluate(rule, &chunks),
                         SEC_TLS_005 => tls::evaluate(rule, &chunks),
                         _ => Vec::new(),
-                    };
+                    }
+                    .into_iter()
+                    .map(|finding| finding.with_engine(EvaluationEngine::Tier0Static))
+                    .collect();
                     RuleEvaluationResult::new(
                         rule.id.clone(),
                         EvaluationEngine::Tier0Static,

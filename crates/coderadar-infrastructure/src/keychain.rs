@@ -19,8 +19,12 @@ use coderadar_domain::DomainError;
 pub const KEYRING_SERVICE: &str = "coderadar-studio";
 /// Keychain account holding the Jev / OpenRouter API key.
 pub const KEYRING_ACCOUNT: &str = "jev-api-key";
+/// Keychain account holding the Tier 2 Gemini API key.
+pub const GEMINI_KEYRING_ACCOUNT: &str = "gemini-api-key";
 /// Development / CI escape hatch; the keychain always wins when populated.
 pub const JEV_API_KEY_ENV: &str = "JEV_API_KEY";
+/// Development / CI escape hatch for the Tier 2 Gemini key.
+pub const GEMINI_API_KEY_ENV: &str = "GEMINI_API_KEY";
 
 /// A place a secret API key can be persisted and retrieved from.
 ///
@@ -74,6 +78,14 @@ impl KeyringCredentialStore {
         Self {
             service: service.into(),
             account: account.into(),
+        }
+    }
+
+    /// The keychain entry that holds the Tier 2 Gemini key.
+    pub fn gemini() -> Self {
+        Self {
+            service: KEYRING_SERVICE.to_string(),
+            account: GEMINI_KEYRING_ACCOUNT.to_string(),
         }
     }
 }
@@ -189,6 +201,24 @@ pub fn resolve_api_key(store: &dyn CredentialStore) -> Option<String> {
 /// Pure resolution core, taking the environment value explicitly so tests never
 /// mutate process-global state.
 fn resolve_api_key_with(store: &dyn CredentialStore, env: Option<String>) -> Option<String> {
+    if let Ok(Some(key)) = store.get_api_key() {
+        if !key.trim().is_empty() {
+            return Some(key);
+        }
+    }
+    env.filter(|key| !key.trim().is_empty())
+}
+
+/// Resolve the Tier 2 Gemini key from the keychain, then the environment.
+///
+/// Keychain errors degrade to "no key" (the cloud provider is simply not
+/// offered), exactly like the Jev resolver.
+pub fn resolve_gemini_key(store: &dyn CredentialStore) -> Option<String> {
+    resolve_gemini_key_with(store, std::env::var(GEMINI_API_KEY_ENV).ok())
+}
+
+/// Pure Gemini resolution core, taking the environment value explicitly.
+fn resolve_gemini_key_with(store: &dyn CredentialStore, env: Option<String>) -> Option<String> {
     if let Ok(Some(key)) = store.get_api_key() {
         if !key.trim().is_empty() {
             return Some(key);

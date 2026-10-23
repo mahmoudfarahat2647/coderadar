@@ -1,4 +1,5 @@
 use crate::category::FindingCategory;
+use crate::rule::EvaluationEngine;
 use crate::score::RiskScore;
 use crate::severity::Severity;
 
@@ -31,6 +32,9 @@ pub struct Finding {
     pub description: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
+    /// Engine that actually produced the finding, as it crossed the
+    /// evaluation boundary (`CR-SPEC-09 §5`).
+    pub engine: EvaluationEngine,
     /// Normalized risk score in `[0.0, 1.0]`.
     pub risk_score: RiskScore,
 }
@@ -59,6 +63,7 @@ impl Finding {
             title: String::new(),
             description: String::new(),
             confidence: 1.0,
+            engine: EvaluationEngine::default(),
             risk_score: RiskScore::default(),
         }
     }
@@ -113,6 +118,13 @@ impl Finding {
         } else {
             confidence.clamp(0.0, 1.0)
         };
+        self
+    }
+
+    /// Set the engine that produced the finding.
+    #[must_use]
+    pub const fn with_engine(mut self, engine: EvaluationEngine) -> Self {
+        self.engine = engine;
         self
     }
 

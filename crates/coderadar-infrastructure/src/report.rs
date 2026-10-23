@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-use coderadar_domain::{Finding, Severity};
+use coderadar_domain::{Finding, PullRequestHygiene, Severity};
 
 use crate::layer_map::LayerMapSource;
 use crate::pipeline::ScanOutcome;
@@ -35,6 +35,8 @@ pub struct ScanStatsReport {
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
 }
 
 /// Findings counted by severity.
@@ -61,6 +63,8 @@ pub struct SessionReport {
     pub root_dir: String,
     /// Scan mode token (`full_scan`).
     pub mode: String,
+    /// Engine label of the composition root (`mock` | `jev` | `mock_fallback`).
+    pub engine_mode: String,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds.
@@ -92,10 +96,39 @@ pub struct FindingReport {
     pub title: String,
     /// Explanation (secrets are always masked).
     pub description: String,
+    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
+    pub engine: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
     /// Normalized risk score in `[0.0, 1.0]`.
     pub risk_score: f32,
+}
+
+/// Pull Request hygiene scorecard (present for `staged_diff` scans).
+#[derive(Debug, Clone, Serialize)]
+pub struct PrHygieneReport {
+    /// The revision the staged index was compared against (`HEAD` or `empty`).
+    pub base: String,
+    /// Number of changed files.
+    pub files_changed: usize,
+    /// Number of added lines.
+    pub additions: u32,
+    /// Number of removed lines.
+    pub deletions: u32,
+    /// Total changed lines.
+    pub lines_changed: u32,
+    /// Changed production source files.
+    pub production_files_changed: usize,
+    /// Changed test files.
+    pub test_files_changed: usize,
+    /// Unrelated top-level areas touched, sorted.
+    pub areas_touched: Vec<String>,
+    /// `PR-SCP-001` fired.
+    pub scope_creep: bool,
+    /// `PR-BRK-002` fired.
+    pub breaking_change: bool,
+    /// `PR-TST-003` fired.
+    pub missing_tests: bool,
 }
 
 /// The complete JSON document printed by `coderadar scan`.
@@ -113,6 +146,9 @@ pub struct ScanReport {
     pub session: SessionReport,
     /// Findings, sorted by file/line/rule for deterministic output.
     pub findings: Vec<FindingReport>,
+    /// Pull Request hygiene, present only for a `staged_diff` scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_hygiene: Option<PrHygieneReport>,
 }
 
 impl ScanReport {
@@ -142,11 +178,16 @@ impl ScanReport {
                 module_chunks: outcome.module_chunks,
                 duration_ms,
                 compliance_percent: summary.compliance_percent,
+                suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             },
             session: SessionReport {
                 id: session.id.clone(),
                 root_dir: session.root_dir.clone(),
                 mode: session.mode.as_str().to_string(),
+                engine_mode: session
+                    .engine_mode
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 started_at_unix_ms: session.started_at_unix_ms,
                 finished_at_unix_ms,
                 totals: SeverityTotals {
@@ -158,7 +199,25 @@ impl ScanReport {
                 },
             },
             findings: session.findings.iter().map(finding_report).collect(),
+            pr_hygiene: outcome.pull_request.as_ref().map(pr_hygiene_report),
         }
+    }
+}
+
+/// Map the Pull Request hygiene assessment into its boundary DTO.
+fn pr_hygiene_report(hygiene: &PullRequestHygiene) -> PrHygieneReport {
+    PrHygieneReport {
+        base: hygiene.base.clone(),
+        files_changed: hygiene.files_changed,
+        additions: hygiene.additions,
+        deletions: hygiene.deletions,
+        lines_changed: hygiene.lines_changed,
+        production_files_changed: hygiene.production_files_changed,
+        test_files_changed: hygiene.test_files_changed,
+        areas_touched: hygiene.areas_touched.clone(),
+        scope_creep: hygiene.scope_creep,
+        breaking_change: hygiene.breaking_change,
+        missing_tests: hygiene.missing_tests,
     }
 }
 
@@ -175,6 +234,7 @@ fn finding_report(finding: &Finding) -> FindingReport {
         cwe: finding.cwe.clone(),
         title: finding.title.clone(),
         description: finding.description.clone(),
+        engine: finding.engine.as_str().to_string(),
         confidence: finding.confidence,
         risk_score: finding.risk_score.value(),
     }
@@ -191,7 +251,9 @@ mod tests {
 
     fn sample_outcome() -> ScanOutcome {
         let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
-            .with_files_scanned(2);
+            .with_files_scanned(2)
+            .with_suppressed_heuristic_findings(2)
+            .with_engine_mode("mock");
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -208,6 +270,7 @@ mod tests {
             files_scanned: 2,
             ast_chunks: 5,
             module_chunks: 2,
+            pull_request: None,
         }
     }
 
@@ -222,7 +285,7 @@ mod tests {
 
         assert_eq!(value["tool"]["name"], "coderadar");
         assert_eq!(value["tool"]["version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(value["ruleset_version"], "2026.1.0-strict");
+        assert_eq!(value["ruleset_version"], "2026.8.0-pr");
         assert_eq!(value["layer_map_source"], "config_file");
 
         assert_eq!(value["scan"]["files_scanned"], 2);
@@ -230,10 +293,12 @@ mod tests {
         assert_eq!(value["scan"]["module_chunks"], 2);
         assert_eq!(value["scan"]["duration_ms"], 42);
         assert_eq!(value["scan"]["compliance_percent"], 50);
+        assert_eq!(value["scan"]["suppressed_heuristic_findings"], 2);
 
         assert_eq!(value["session"]["id"], "scan-1");
         assert_eq!(value["session"]["root_dir"], "/tmp/root");
         assert_eq!(value["session"]["mode"], "full_scan");
+        assert_eq!(value["session"]["engine_mode"], "mock");
         assert_eq!(value["session"]["started_at_unix_ms"], 1_000);
         assert_eq!(value["session"]["finished_at_unix_ms"], 1_500);
         assert_eq!(value["session"]["totals"]["total"], 1);
@@ -253,9 +318,19 @@ mod tests {
         assert_eq!(finding["cwe"], "CWE-798");
         assert_eq!(finding["title"], "Hardcoded Secrets & API Keys");
         assert_eq!(finding["description"], "found a thing [REDACTED]");
+        assert_eq!(finding["engine"], "tier0");
         let confidence = finding["confidence"].as_f64().expect("confidence number");
         assert!((confidence - 0.9).abs() < 0.001, "got {confidence}");
         assert_eq!(finding["risk_score"].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn an_unlabelled_session_reports_an_unknown_engine_mode() {
+        let manifest = RuleManifest::embedded().unwrap();
+        let mut outcome = sample_outcome();
+        outcome.session.engine_mode = None;
+        let report = ScanReport::from_scan(&outcome, &manifest, LayerMapSource::ConfigFile, 42);
+        assert_eq!(report.session.engine_mode, "unknown");
     }
 
     #[test]

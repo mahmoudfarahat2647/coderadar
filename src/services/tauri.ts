@@ -14,6 +14,8 @@ import {
   PatchProposalDTO,
   ScanMode,
   ScanReport,
+  Tier2FixRequestDTO,
+  Tier2StatusDTO,
 } from "../types";
 
 export const isTauriEnvironment = (): boolean => {
@@ -272,6 +274,55 @@ export async function pickReportPath(): Promise<string | null> {
     } catch (err) {
       console.warn("Failed to open the native save dialog via Tauri:", err);
     }
+  }
+  return null;
+}
+
+/**
+ * Phase 8 - Read the Tier 2 provider configuration (local Ollama / cloud Gemini).
+ * Read-only: degrades to `null` in the browser preview.
+ */
+export async function getTier2Status(): Promise<Tier2StatusDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<Tier2StatusDTO>("get_tier2_status");
+  }
+  return null;
+}
+
+/** Phase 8 - Store the Gemini API key in the OS keychain. */
+export async function storeTier2Key(
+  apiKey: string
+): Promise<Tier2StatusDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<Tier2StatusDTO>("store_tier2_key", { apiKey });
+  }
+  throw new Error("Tauri environment not detected. Please run within CodeRadar desktop app.");
+}
+
+/** Phase 8 - Remove the stored Gemini API key. */
+export async function clearTier2Key(): Promise<Tier2StatusDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<Tier2StatusDTO>("clear_tier2_key");
+  }
+  throw new Error("Tauri environment not detected. Please run within CodeRadar desktop app.");
+}
+
+/**
+ * Phase 8 - Ask a Tier 2 model for a fix and receive a reviewable diff preview.
+ *
+ * Nothing is written: the returned preview is applied through the same
+ * workspace-guarded `apply_patch` path as a deterministic fix. Cloud providers
+ * require `allow_cloud` consent and a fully redacted file.
+ */
+export async function generateFix(
+  request: Tier2FixRequestDTO
+): Promise<PatchPreviewDTO | null> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<PatchPreviewDTO>("generate_fix", { request });
   }
   return null;
 }

@@ -34,6 +34,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scan_sessions (
          medium INTEGER NOT NULL,
          low INTEGER NOT NULL,
          compliance_percent INTEGER NOT NULL,
+         suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0,
+         engine_mode TEXT,
          findings_json TEXT NOT NULL
      )";
 
@@ -73,6 +75,26 @@ pub struct FindingSnapshot {
     pub title: String,
     /// Longer explanation.
     pub description: String,
+    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
+    /// Snapshots written before the provenance column existed carry no
+    /// `engine` key and deserialize with the `tier0` marker instead of
+    /// failing.
+    #[serde(default = "tier0_engine")]
+    pub engine: String,
+    /// Evaluator confidence in `[0.0, 1.0]`. Legacy snapshots deserialize as
+    /// `1.0`.
+    #[serde(default = "confidence_default")]
+    pub confidence: f32,
+}
+
+/// Deserialization default for the engine marker of legacy snapshots.
+fn tier0_engine() -> String {
+    "tier0".to_string()
+}
+
+/// Deserialization default for the confidence of legacy snapshots.
+fn confidence_default() -> f32 {
+    1.0
 }
 
 impl FindingSnapshot {
@@ -89,6 +111,8 @@ impl FindingSnapshot {
             cwe: finding.cwe.clone(),
             title: finding.title.clone(),
             description: finding.description.clone(),
+            engine: finding.engine.as_str().to_string(),
+            confidence: finding.confidence,
         }
     }
 }
@@ -108,6 +132,8 @@ struct SessionRecord {
     medium: usize,
     low: usize,
     compliance_percent: u8,
+    suppressed_heuristic_findings: usize,
+    engine_mode: Option<String>,
     findings_json: String,
 }
 
@@ -137,6 +163,8 @@ impl SessionRecord {
             medium: summary.medium,
             low: summary.low,
             compliance_percent: summary.compliance_percent,
+            suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
+            engine_mode: summary.engine_mode.clone(),
             findings_json,
         })
     }
@@ -227,6 +255,22 @@ impl SqliteScanHistoryRepository {
         connection
             .execute_batch(SCHEMA)
             .map_err(|error| sqlite_error("cannot create the history schema", error))?;
+        // Migrate databases created before the heuristic precision floor: a
+        // freshly created schema already carries both columns, so the ALTER
+        // statements are expected to fail with "duplicate column name" there.
+        for statement in [
+            "ALTER TABLE scan_sessions
+             ADD COLUMN suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE scan_sessions
+             ADD COLUMN engine_mode TEXT",
+        ] {
+            if let Err(error) = connection.execute(statement, params![]) {
+                let message = error.to_string();
+                if !message.contains("duplicate column name") {
+                    return Err(sqlite_error("cannot migrate the history schema", error));
+                }
+            }
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path,
@@ -288,10 +332,11 @@ fn write_record(
     guard
         .execute(
             "INSERT OR REPLACE INTO scan_sessions (
-                 id, root_dir, mode, started_at_unix_ms, finished_at_unix_ms,
-                 files_scanned, total_findings, critical, high, medium, low,
-                 compliance_percent, findings_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                  id, root_dir, mode, started_at_unix_ms, finished_at_unix_ms,
+                  files_scanned, total_findings, critical, high, medium, low,
+                  compliance_percent, suppressed_heuristic_findings, engine_mode,
+                  findings_json
+              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 record.id,
                 record.root_dir,
@@ -305,6 +350,8 @@ fn write_record(
                 record.medium as i64,
                 record.low as i64,
                 record.compliance_percent as i64,
+                record.suppressed_heuristic_findings as i64,
+                record.engine_mode,
                 record.findings_json,
             ],
         )
@@ -329,7 +376,8 @@ fn read_summaries(
     let mut statement = guard
         .prepare(
             "SELECT id, root_dir, mode, finished_at_unix_ms, files_scanned,
-                    total_findings, critical, high, medium, low, compliance_percent
+                    total_findings, critical, high, medium, low, compliance_percent,
+                    suppressed_heuristic_findings, engine_mode
              FROM scan_sessions
              WHERE ?2 IS NULL OR root_dir = ?2
              ORDER BY finished_at_unix_ms DESC, id DESC
@@ -350,6 +398,8 @@ fn read_summaries(
                 medium: row.get::<_, i64>(8)? as usize,
                 low: row.get::<_, i64>(9)? as usize,
                 compliance_percent: row.get::<_, i64>(10)? as u8,
+                suppressed_heuristic_findings: row.get::<_, i64>(11)? as usize,
+                engine_mode: row.get(12)?,
             })
         })
         .map_err(|error| sqlite_error("cannot read the scan history", error))?;
@@ -438,7 +488,9 @@ mod tests {
         assert_eq!(repository.path().to_string_lossy(), ":memory:");
 
         let first = session("a", 1_000, 4, Vec::new());
-        let second = session("b", 2_000, 2, Vec::new());
+        let mut second = session("b", 2_000, 2, Vec::new());
+        second.suppressed_heuristic_findings = 3;
+        second.engine_mode = Some("jev".to_string());
         crate::executor::block_on(repository.save_scan_session(&first)).expect("save");
         crate::executor::block_on(repository.save_scan_session(&second)).expect("save");
 
@@ -448,6 +500,10 @@ mod tests {
         assert_eq!(history[1].id, "a");
         assert_eq!(history[0].files_scanned, 2);
         assert_eq!(history[0].compliance_percent, 100);
+        assert_eq!(history[0].suppressed_heuristic_findings, 3);
+        assert_eq!(history[0].engine_mode.as_deref(), Some("jev"));
+        assert_eq!(history[1].suppressed_heuristic_findings, 0);
+        assert_eq!(history[1].engine_mode, None);
     }
 
     #[test]

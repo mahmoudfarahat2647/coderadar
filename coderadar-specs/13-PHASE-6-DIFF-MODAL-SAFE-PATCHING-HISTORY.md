@@ -114,11 +114,14 @@ Table `scan_sessions`:
 | `total_findings` | INTEGER | finding count |
 | `critical` / `high` / `medium` / `low` | INTEGER | severity breakdown |
 | `compliance_percent` | INTEGER | 0-100, files without findings / files scanned |
+| `suppressed_heuristic_findings` | INTEGER | heuristic findings dropped by the 0.5 confidence floor (added post-Phase-8) |
+| `engine_mode` | TEXT NULLABLE | `mock` / `jev` / `mock_fallback` — engine that produced the score (added post-Phase-8) |
 | `findings_json` | TEXT | JSON snapshot of the findings |
 
 The repository is opened on a background thread (`spawn_blocking`) so the UI thread is never
 blocked by SQLite, and every write is a single transaction. A persistence failure is logged and
-never invalidates a finished scan.
+never invalidates a finished scan. Pre-existing databases are migrated with an idempotent
+`ALTER TABLE` that silently no-ops when the column already exists.
 
 ## 7. IPC contract
 

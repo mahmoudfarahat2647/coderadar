@@ -9,9 +9,11 @@ use std::future::Future;
 use std::pin::Pin;
 
 use coderadar_domain::{
-    CodeChunk, DomainError, PatchOutcome, PatchProposal, RuleEvaluationResult, RuleSpec, ScanMode,
-    ScanSession, ScanSessionSummary,
+    Changeset, CodeChunk, DomainError, PatchOutcome, PatchProposal, RuleEvaluationResult, RuleSpec,
+    ScanMode, ScanSession, ScanSessionSummary,
 };
+
+use crate::tier2::{FixGenerationRequest, GeneratedFixDraft};
 
 /// A boxed, `Send` future returned across an asynchronous port boundary.
 ///
@@ -121,4 +123,43 @@ pub trait PatchApplier: Send + Sync {
         root: &'a str,
         proposal: &'a PatchProposal,
     ) -> BoxFuture<'a, Result<PatchOutcome, DomainError>>;
+}
+
+/// Reads the Git changeset that a pull-request scan should analyse.
+///
+/// The implementation owns the Git driver (a library, never a shell process);
+/// the domain only receives the pure [`Changeset`] description.
+pub trait ChangesetGateway: Send + Sync {
+    /// Read the **staged** changeset of the repository at `root`.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when `root` is not a Git repository or the index
+    /// cannot be read.
+    fn staged_changeset<'a>(
+        &'a self,
+        root: &'a str,
+    ) -> BoxFuture<'a, Result<Changeset, DomainError>>;
+}
+
+/// A Tier 2 generative fix provider (local Ollama or a cloud model).
+///
+/// The provider owns the transport, the prompt and the provider-specific
+/// privacy policy; the use case owns the safety checks that turn a draft into a
+/// reviewable [`PatchProposal`].
+pub trait GenerativeFixProvider: Send + Sync {
+    /// Stable provider token shown to the user (`ollama`, `gemini`).
+    fn provider_name(&self) -> &'static str;
+
+    /// `true` when the model runs on the local machine.
+    fn is_local(&self) -> bool;
+
+    /// Ask the model for a corrected version of the file.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when the provider is unavailable or its output
+    /// cannot be parsed into a [`GeneratedFixDraft`].
+    fn propose_fix<'a>(
+        &'a self,
+        request: &'a FixGenerationRequest,
+    ) -> BoxFuture<'a, Result<GeneratedFixDraft, DomainError>>;
 }
