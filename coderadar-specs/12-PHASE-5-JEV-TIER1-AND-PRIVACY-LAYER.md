@@ -47,6 +47,11 @@ with `engine = MockHeuristic`, and the UI badge flips to *Mock Mode (fallback)* 
 the frontend polls `get_engine_status` every 2 s while a scan is running, so the flip
 is visible during the scan, not only at its end.
 
+The fallback state also outlives the scan: the composition root labels the session
+with the engine mode token (`mock` | `jev` | `mock_fallback`) before the report is
+rendered and the session row is persisted, so the scan history (`CR-SPEC-13 §6`)
+shows which engine produced each recorded compliance score (`engine_mode` column).
+
 ## 5. Latency
 
 Measured against the Phase 0 baseline (`CR-SPEC-08 §1`: ~0.5–0.6 s/chunk warm). The
