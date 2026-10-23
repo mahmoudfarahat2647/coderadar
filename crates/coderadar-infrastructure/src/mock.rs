@@ -604,7 +604,10 @@ impl SemanticRuleEvaluator for MockRuleEvaluator {
             let results: Vec<RuleEvaluationResult> = rules
                 .iter()
                 .map(|rule| {
-                    let findings = Self::evaluate_rule(rule, &chunks);
+                    let findings = Self::evaluate_rule(rule, &chunks)
+                        .into_iter()
+                        .map(|finding| finding.with_engine(EvaluationEngine::MockHeuristic))
+                        .collect();
                     RuleEvaluationResult::new(
                         rule.id.clone(),
                         EvaluationEngine::MockHeuristic,

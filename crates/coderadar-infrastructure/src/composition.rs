@@ -59,6 +59,9 @@ pub fn scan_project_with(
 
 /// Run a scan of `root` in `mode` over an injected semantic engine.
 ///
+/// The session is labelled with the `mock` engine token: entry points without
+/// an explicit engine label are offline compositions.
+///
 /// # Errors
 /// Returns [`DomainError`] when the root path is invalid, the manifest fails
 /// to load, or the scan pipeline aborts.
@@ -67,6 +70,16 @@ pub fn scan_project_with_mode(
     semantic: Arc<dyn SemanticRuleEvaluator>,
     mode: ScanMode,
 ) -> Result<ScanReport, DomainError> {
+    run_batch(root, semantic, mode, "mock").map(|(_, report)| report)
+}
+
+/// Shared batched implementation: one outcome plus its report.
+fn run_batch(
+    root: &Path,
+    semantic: Arc<dyn SemanticRuleEvaluator>,
+    mode: ScanMode,
+    engine_mode: &str,
+) -> Result<(ScanOutcome, ScanReport), DomainError> {
     let active = RulesStore::new(RulesStore::default_data_dir()).active_or_embedded();
     let manifest = active.manifest;
     let layer_map = LayerMap::load(root);
@@ -74,14 +87,12 @@ pub fn scan_project_with_mode(
     let router = RuleEngineRouter::new(Arc::new(layer_map)).with_semantic(semantic);
     let pipeline = build_pipeline(Arc::new(router), &manifest);
     let started = Instant::now();
-    let outcome = pipeline.run_mode(root, mode)?;
+
+    let mut outcome = pipeline.run_mode(root, mode)?;
+    outcome.session.engine_mode = Some(engine_mode.to_string());
     let duration_ms = started.elapsed().as_millis() as u64;
-    Ok(ScanReport::from_scan(
-        &outcome,
-        &manifest,
-        source,
-        duration_ms,
-    ))
+    let report = ScanReport::from_scan(&outcome, &manifest, source, duration_ms);
+    Ok((outcome, report))
 }
 
 /// Build the pipeline with the Git changeset gateway every scan needs.
@@ -149,7 +160,7 @@ pub fn scan_project_streaming_with_mode<F>(
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
-    run_streaming(root, semantic, flush_interval, mode, on_batch).map(|(_, report)| report)
+    run_streaming(root, semantic, flush_interval, mode, on_batch, "mock").map(|(_, report)| report)
 }
 
 /// Run a full scan of `root` and persist the finished session in `history`.
@@ -179,10 +190,14 @@ where
         ScanMode::FullScan,
         on_batch,
         history,
+        "mock",
     )
 }
 
 /// Run a scan of `root` in `mode` and persist the finished session in `history`.
+///
+/// `engine_mode` is the composition root's engine label (`mock` | `jev` |
+/// `mock_fallback`) recorded on the session and in the history row.
 ///
 /// # Errors
 /// Returns [`DomainError`] when the root path is invalid, the manifest fails
@@ -195,11 +210,13 @@ pub fn scan_project_streaming_with_history_mode<F>(
     mode: ScanMode,
     on_batch: F,
     history: &dyn ScanHistoryRepository,
+    engine_mode: &str,
 ) -> Result<ScanReport, DomainError>
 where
     F: FnMut(FindingBatch) + Send + 'static,
 {
-    let (outcome, report) = run_streaming(root, semantic, flush_interval, mode, on_batch)?;
+    let (outcome, report) =
+        run_streaming(root, semantic, flush_interval, mode, on_batch, engine_mode)?;
     if let Err(error) = block_on(history.save_scan_session(&outcome.session)) {
         eprintln!("[coderadar] the scan session cannot be persisted: {error}");
     }
@@ -213,6 +230,7 @@ fn run_streaming<F>(
     flush_interval: Duration,
     mode: ScanMode,
     on_batch: F,
+    engine_mode: &str,
 ) -> Result<(ScanOutcome, ScanReport), DomainError>
 where
     F: FnMut(FindingBatch) + Send + 'static,
@@ -233,6 +251,9 @@ where
     drop(sender);
     handle.join();
 
+    let mut session = outcome.session;
+    session.engine_mode = Some(engine_mode.to_string());
+    let outcome = ScanOutcome { session, ..outcome };
     let duration_ms = started.elapsed().as_millis() as u64;
     let report = ScanReport::from_scan(&outcome, &manifest, source, duration_ms);
     Ok((outcome, report))

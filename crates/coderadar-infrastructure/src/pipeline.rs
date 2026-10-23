@@ -33,7 +33,7 @@ use crate::executor::block_on;
 use crate::scanner::ParallelFileScanner;
 
 /// Lowest accepted confidence of a finding produced by the mock heuristic
-/// engine (parity with the Jev Tier 1 confidence floor, `CR-SPEC-12 §2`).
+/// engine (parity with the Jev Tier 1 confidence floor, `CR-SPEC-09 §5`).
 ///
 /// Tier 0 static analysis is deterministic and never filtered; heuristic
 /// findings below the floor are dropped and only counted, so untuned

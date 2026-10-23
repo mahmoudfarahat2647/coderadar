@@ -182,6 +182,19 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
           {/* Data points */}
           {projected.map((point) => (
             <g key={point.index}>
+              <title>
+                {`${new Date(ordered[point.index].finished_at_unix_ms).toLocaleString()} · ${
+                  ordered[point.index].engine_mode === "jev"
+                    ? "Jev Tier 1"
+                    : ordered[point.index].engine_mode === "mock_fallback"
+                    ? "Mock fallback"
+                    : "Mock engine"
+                } · ${ordered[point.index].total_findings} findings${
+                  ordered[point.index].suppressed_heuristic_findings > 0
+                    ? ` · ${ordered[point.index].suppressed_heuristic_findings} suppressed`
+                    : ""
+                }`}
+              </title>
               <circle
                 cx={point.x}
                 cy={point.y}

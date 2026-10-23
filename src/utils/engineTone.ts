@@ -1,4 +1,4 @@
-import { EngineStatus } from "../types";
+import { EngineStatus, FindingEngine } from "../types";
 
 export interface EngineTone {
   /** Badge wrapper classes. */
@@ -30,4 +30,16 @@ export function engineTone(status: EngineStatus | null): EngineTone {
     dot: "bg-secondary animate-ping",
     label: "Mock Engine",
   };
+}
+
+/** Label of the engine that produced a single finding. */
+export function findingEngineLabel(engine: FindingEngine): string {
+  switch (engine) {
+    case "tier0":
+      return "Static";
+    case "tier1":
+      return "Live model";
+    default:
+      return "Heuristic";
+  }
 }

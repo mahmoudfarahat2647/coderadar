@@ -77,6 +77,20 @@ export const StatusBar: React.FC<StatusBarProps> = ({
               <span className="text-text-primary font-semibold">{scanStats.files_scanned}</span>
             </div>
             <span className="text-border-strong hidden sm:inline">·</span>
+            {scanStats.suppressed_heuristic_findings > 0 && (
+              <>
+                <div
+                  className="hidden lg:inline cursor-help"
+                  title="Heuristic findings dropped by the confidence floor (kept out of the report)"
+                >
+                  <span>Suppressed: </span>
+                  <span className="text-text-muted font-semibold">
+                    {scanStats.suppressed_heuristic_findings}
+                  </span>
+                </div>
+                <span className="text-border-strong hidden lg:inline">·</span>
+              </>
+            )}
             <div>
               <span>Latency: </span>
               <span className="text-secondary font-semibold">{scanStats.duration_ms}ms</span>

@@ -12,6 +12,8 @@ export type FindingCategory =
   | "performance"
   | "pull_requests";
 
+export type FindingEngine = "tier0" | "tier1" | "mock";
+
 export interface FindingDTO {
   id: string;
   file: string;
@@ -23,6 +25,8 @@ export interface FindingDTO {
   cwe?: string | null;
   title: string;
   description: string;
+  engine: FindingEngine;
+  confidence: number;
   radar_r: number;
   radar_theta: number;
   resolved?: boolean;
@@ -48,6 +52,8 @@ export interface ScanStats {
   ast_chunks: number;
   module_chunks: number;
   duration_ms: number;
+  /** Heuristic findings dropped by the 0.5 confidence floor. */
+  suppressed_heuristic_findings: number;
 }
 
 /**
@@ -80,6 +86,7 @@ export interface ScanReport {
     id: string;
     root_dir: string;
     mode: string;
+    engine_mode: string;
     started_at_unix_ms: number;
     finished_at_unix_ms?: number;
     totals: SeverityTotals;
@@ -194,6 +201,10 @@ export interface HistoryPointDTO {
   high: number;
   medium: number;
   low: number;
+  /** Heuristic findings dropped by the 0.5 confidence floor. */
+  suppressed_heuristic_findings: number;
+  /** Engine label: `mock` | `jev` | `mock_fallback`. */
+  engine_mode: "mock" | "jev" | "mock_fallback" | null;
   compliance_percent: number;
 }
 

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Check, Copy, ShieldAlert, FileText, CheckCheck, Wand2 } from "lucide-react";
 import { FindingDTO } from "../types";
+import { findingEngineLabel } from "../utils/engineTone";
 
 interface FindingDrawerProps {
   finding: FindingDTO | null;
@@ -82,6 +83,18 @@ export const FindingDrawer: React.FC<FindingDrawerProps> = ({
                 {finding.cwe}
               </span>
             )}
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-mono text-text-muted bg-surface-panel border border-border-subtle"
+              title={`Produced by the ${findingEngineLabel(finding.engine).toLowerCase()} engine`}
+            >
+              {findingEngineLabel(finding.engine)}
+            </span>
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-mono text-text-muted bg-surface-panel border border-border-subtle"
+              title="Evaluator confidence"
+            >
+              {Math.round(finding.confidence * 100)}%
+            </span>
             <span className="font-mono text-xs text-text-muted">{finding.rule_id}</span>
           </div>
           <h2 className="font-headline font-semibold text-sm text-text-primary leading-snug">

@@ -63,6 +63,8 @@ pub struct SessionReport {
     pub root_dir: String,
     /// Scan mode token (`full_scan`).
     pub mode: String,
+    /// Engine label of the composition root (`mock` | `jev` | `mock_fallback`).
+    pub engine_mode: String,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds.
@@ -94,6 +96,8 @@ pub struct FindingReport {
     pub title: String,
     /// Explanation (secrets are always masked).
     pub description: String,
+    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
+    pub engine: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
     /// Normalized risk score in `[0.0, 1.0]`.
@@ -180,6 +184,10 @@ impl ScanReport {
                 id: session.id.clone(),
                 root_dir: session.root_dir.clone(),
                 mode: session.mode.as_str().to_string(),
+                engine_mode: session
+                    .engine_mode
+                    .clone()
+                    .unwrap_or_else(|| "mock".to_string()),
                 started_at_unix_ms: session.started_at_unix_ms,
                 finished_at_unix_ms,
                 totals: SeverityTotals {
@@ -226,6 +234,7 @@ fn finding_report(finding: &Finding) -> FindingReport {
         cwe: finding.cwe.clone(),
         title: finding.title.clone(),
         description: finding.description.clone(),
+        engine: finding.engine.as_str().to_string(),
         confidence: finding.confidence,
         risk_score: finding.risk_score.value(),
     }
@@ -288,6 +297,7 @@ mod tests {
         assert_eq!(value["session"]["id"], "scan-1");
         assert_eq!(value["session"]["root_dir"], "/tmp/root");
         assert_eq!(value["session"]["mode"], "full_scan");
+        assert_eq!(value["session"]["engine_mode"], "mock");
         assert_eq!(value["session"]["started_at_unix_ms"], 1_000);
         assert_eq!(value["session"]["finished_at_unix_ms"], 1_500);
         assert_eq!(value["session"]["totals"]["total"], 1);
@@ -307,6 +317,7 @@ mod tests {
         assert_eq!(finding["cwe"], "CWE-798");
         assert_eq!(finding["title"], "Hardcoded Secrets & API Keys");
         assert_eq!(finding["description"], "found a thing [REDACTED]");
+        assert_eq!(finding["engine"], "tier0");
         let confidence = finding["confidence"].as_f64().expect("confidence number");
         assert!((confidence - 0.9).abs() < 0.001, "got {confidence}");
         assert_eq!(finding["risk_score"].as_f64(), Some(1.0));

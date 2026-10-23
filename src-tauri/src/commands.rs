@@ -231,6 +231,15 @@ pub async fn start_scan(
         .read()
         .map_err(|_| "Engine state lock poisoned".to_string())?
         .evaluator();
+    let engine_mode = app
+        .state::<AppState>()
+        .engine
+        .read()
+        .map_err(|_| "Engine state lock poisoned".to_string())?
+        .status()
+        .mode()
+        .as_str()
+        .to_string();
 
     let history = app.state::<AppState>().history.clone();
 
@@ -249,6 +258,7 @@ pub async fn start_scan(
                 let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
             },
             &repository,
+            &engine_mode,
         )
     })
     .await
