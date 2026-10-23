@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { Activity, TrendingUp, TrendingDown } from "lucide-react";
 import { HistoryPointDTO } from "../types";
+import { engineModeLabel } from "../utils/engineTone";
 import {
   TrendPadding,
   TrendPoint,
@@ -183,13 +184,9 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
           {projected.map((point) => (
             <g key={point.index}>
               <title>
-                {`${new Date(ordered[point.index].finished_at_unix_ms).toLocaleString()} · ${
-                  ordered[point.index].engine_mode === "jev"
-                    ? "Jev Tier 1"
-                    : ordered[point.index].engine_mode === "mock_fallback"
-                    ? "Mock fallback"
-                    : "Mock engine"
-                } · ${ordered[point.index].total_findings} findings${
+                {`${new Date(ordered[point.index].finished_at_unix_ms).toLocaleString()} · ${engineModeLabel(
+                  ordered[point.index].engine_mode
+                )} · ${ordered[point.index].total_findings} findings${
                   ordered[point.index].suppressed_heuristic_findings > 0
                     ? ` · ${ordered[point.index].suppressed_heuristic_findings} suppressed`
                     : ""

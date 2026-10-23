@@ -76,17 +76,24 @@ pub struct FindingSnapshot {
     /// Longer explanation.
     pub description: String,
     /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
-    /// Older snapshots deserialize as `tier0`.
-    #[serde(default)]
+    /// Snapshots written before the provenance column existed carry no
+    /// `engine` key and deserialize with the `tier0` marker instead of
+    /// failing.
+    #[serde(default = "tier0_engine")]
     pub engine: String,
-    /// Evaluator confidence in `[0.0, 1.0]`. Older snapshots deserialize as
+    /// Evaluator confidence in `[0.0, 1.0]`. Legacy snapshots deserialize as
     /// `1.0`.
-    #[serde(default = "one_f32")]
+    #[serde(default = "confidence_default")]
     pub confidence: f32,
 }
 
+/// Deserialization default for the engine marker of legacy snapshots.
+fn tier0_engine() -> String {
+    "tier0".to_string()
+}
+
 /// Deserialization default for the confidence of legacy snapshots.
-fn one_f32() -> f32 {
+fn confidence_default() -> f32 {
     1.0
 }
 

@@ -86,7 +86,7 @@ export interface ScanReport {
     id: string;
     root_dir: string;
     mode: string;
-    engine_mode: string;
+    engine_mode: "mock" | "jev" | "mock_fallback" | null;
     started_at_unix_ms: number;
     finished_at_unix_ms?: number;
     totals: SeverityTotals;

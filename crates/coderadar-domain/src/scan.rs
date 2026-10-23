@@ -107,7 +107,7 @@ impl ScanSession {
 
     /// Record how many heuristic findings the precision floor dropped
     /// (`CR-SPEC-09 §5`).
-    pub fn with_suppressed_findings(mut self, suppressed: usize) -> Self {
+    pub fn with_suppressed_heuristic_findings(mut self, suppressed: usize) -> Self {
         self.suppressed_heuristic_findings = suppressed;
         self
     }

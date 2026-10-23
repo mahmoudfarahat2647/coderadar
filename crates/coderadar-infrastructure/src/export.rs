@@ -49,6 +49,7 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
         module_chunks: report.scan.module_chunks,
         duration_ms: report.scan.duration_ms,
         compliance_percent: report.scan.compliance_percent,
+        suppressed_heuristic_findings: report.scan.suppressed_heuristic_findings,
         findings: report
             .findings
             .iter()
@@ -179,6 +180,7 @@ mod tests {
             "| Compliance | {} % |",
             report.scan.compliance_percent
         )));
+        assert!(markdown.contains("| Suppressed low-precision findings | 0 |"));
         assert!(markdown.contains("SEC-TOK-002"));
         assert!(markdown.contains("ARCH-DEP-001"));
         assert!(markdown.contains("CWE-798"));

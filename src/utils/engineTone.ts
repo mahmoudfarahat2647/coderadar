@@ -32,6 +32,20 @@ export function engineTone(status: EngineStatus | null): EngineTone {
   };
 }
 
+/** Label for the engine mode recorded on a scan session or history row. */
+export function engineModeLabel(mode: string | null | undefined): string {
+  switch (mode) {
+    case "jev":
+      return "Jev Tier 1";
+    case "mock_fallback":
+      return "Mock Fallback";
+    case "mock":
+      return "Mock Engine";
+    default:
+      return "Not recorded";
+  }
+}
+
 /** Label of the engine that produced a single finding. */
 export function findingEngineLabel(engine: FindingEngine): string {
   switch (engine) {

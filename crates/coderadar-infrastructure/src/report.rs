@@ -187,7 +187,7 @@ impl ScanReport {
                 engine_mode: session
                     .engine_mode
                     .clone()
-                    .unwrap_or_else(|| "mock".to_string()),
+                    .unwrap_or_else(|| "unknown".to_string()),
                 started_at_unix_ms: session.started_at_unix_ms,
                 finished_at_unix_ms,
                 totals: SeverityTotals {
@@ -252,7 +252,8 @@ mod tests {
     fn sample_outcome() -> ScanOutcome {
         let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
             .with_files_scanned(2)
-            .with_suppressed_findings(2);
+            .with_suppressed_heuristic_findings(2)
+            .with_engine_mode("mock");
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -321,6 +322,15 @@ mod tests {
         let confidence = finding["confidence"].as_f64().expect("confidence number");
         assert!((confidence - 0.9).abs() < 0.001, "got {confidence}");
         assert_eq!(finding["risk_score"].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn an_unlabelled_session_reports_an_unknown_engine_mode() {
+        let manifest = RuleManifest::embedded().unwrap();
+        let mut outcome = sample_outcome();
+        outcome.session.engine_mode = None;
+        let report = ScanReport::from_scan(&outcome, &manifest, LayerMapSource::ConfigFile, 42);
+        assert_eq!(report.session.engine_mode, "unknown");
     }
 
     #[test]

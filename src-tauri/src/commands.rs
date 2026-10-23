@@ -231,24 +231,16 @@ pub async fn start_scan(
         .read()
         .map_err(|_| "Engine state lock poisoned".to_string())?
         .evaluator();
-    let engine_mode = app
-        .state::<AppState>()
-        .engine
-        .read()
-        .map_err(|_| "Engine state lock poisoned".to_string())?
-        .status()
-        .mode()
-        .as_str()
-        .to_string();
 
     let history = app.state::<AppState>().history.clone();
 
     let app_handle = app.clone();
+    let engine_for_label = app.clone();
     let scan_result = tauri::async_runtime::spawn_blocking(move || {
         // The repository is resolved inside the worker thread: waiting for
         // the opener thread must never happen on the UI thread.
         let repository = history.repository().clone();
-        let app_for_batches = app_handle.clone();
+        let app_for_batches = app_handle;
         scan_project_streaming_with_history_mode(
             &root_path,
             evaluator,
@@ -258,7 +250,17 @@ pub async fn start_scan(
                 let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
             },
             &repository,
-            &engine_mode,
+            // The engine mode is read lazily, once the scan has finished, so
+            // a Jev batch that fell back to Mock mid-run is recorded as
+            // `mock_fallback` and not as `jev` (`CR-SPEC-12 §4`).
+            move || {
+                engine_for_label
+                    .state::<AppState>()
+                    .engine
+                    .read()
+                    .map(|engine| engine.status().mode().as_str().to_string())
+                    .unwrap_or_else(|_| "mock".to_string())
+            },
         )
     })
     .await

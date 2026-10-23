@@ -224,6 +224,7 @@ fn a_failing_history_does_not_fail_the_scan() {
         Duration::from_millis(50),
         |_batch: FindingBatch| {},
         &history,
+        || "mock".to_string(),
     )
     .expect("a broken history must never invalidate a finished scan");
 
@@ -245,6 +246,7 @@ fn a_completed_scan_is_persisted_with_its_compliance_score() {
         Duration::from_millis(50),
         |_batch: FindingBatch| {},
         &repository,
+        || "mock".to_string(),
     )
     .expect("the scan succeeds");
 
@@ -272,6 +274,7 @@ fn the_findings_of_a_completed_scan_are_snapshotted() {
         Duration::from_millis(50),
         |_batch: FindingBatch| {},
         &repository,
+        || "mock".to_string(),
     )
     .expect("the scan succeeds");
 

@@ -33,12 +33,14 @@ use crate::executor::block_on;
 use crate::scanner::ParallelFileScanner;
 
 /// Lowest accepted confidence of a finding produced by the mock heuristic
-/// engine (parity with the Jev Tier 1 confidence floor, `CR-SPEC-09 §5`).
+/// engine (`CR-SPEC-09 §5`).
 ///
 /// Tier 0 static analysis is deterministic and never filtered; heuristic
 /// findings below the floor are dropped and only counted, so untuned
-/// codebases are not flooded with low-precision suggestions.
-pub const HEURISTIC_CONFIDENCE_FLOOR: f32 = 0.5;
+/// codebases are not flooded with low-precision suggestions. The floor is
+/// inclusive (a finding at exactly `0.5` survives) and derived from the Jev
+/// Tier 1 self-gate so the two engines cannot drift apart.
+pub const HEURISTIC_CONFIDENCE_FLOOR: f32 = crate::jev::DEFAULT_CONFIDENCE_THRESHOLD;
 
 /// Outcome of a pipeline run: the session plus scan statistics.
 #[derive(Debug, Clone, PartialEq)]
@@ -426,7 +428,7 @@ impl ScanPipeline {
         let mut session =
             ScanSession::new(format!("scan-{started_ms}"), root_dir, mode, started_ms)
                 .with_files_scanned(module_chunks)
-                .with_suppressed_findings(suppressed);
+                .with_suppressed_heuristic_findings(suppressed);
         for finding in findings {
             session.push(finding);
         }
