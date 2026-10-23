@@ -76,6 +76,13 @@ Fixture scan anatomy: 12 scannable files (+1 gitignored), 12 FileModule chunks, 
 
 **Observations (spec-compliant, pinned by tests).** A bare `fetch(...).catch(...)` still fires `EDGE-TMO-004` (the rule is about missing timeout/abort, not rejection handling). One line carrying two distinct secrets reports the first (consistent with the per-`(rule,file,line)` dedupe contract). A panic-path audit found no `unwrap`/`expect` on user data in non-test code.
 
+**Precision pass (post-Phase-8 `feat/findings-precision`) — heuristic false-positive surface, fixed.** Scanning well-formed third-party code showed the mock heuristics firing on idiomatic patterns; three mock-side fixes in `mock.rs`:
+1. `PERF-NPO-001` no longer flags a call whose line sits entirely *after* the loop's closing brace — a new brace-depth tracker locates the loop body (or the loop header line) instead of a chunk-wide window; braces-less multi-line callbacks are conservatively not flagged.
+2. `PERF-EVT-003` is silenced symmetrically — both the listener and the side-effect branch — when an `removeEventListener` call or a `return () => ...` cleanup exists in the chunk (the old gate silenced only the side-effect branch on cleanup, letting the `addEventListener` listener branch still fire).
+3. `SEC-XSS-004` skips any line that already routes output through a sanitizer (`DOMPurify`/`sanitiz…`, case-insensitive).
+
+**Precision floor + provenance.** The pipeline drops mock-heuristic findings whose `confidence` is below `HEURISTIC_CONFIDENCE_FLOOR = 0.5` — inclusive, in parity with the Jev Tier 1 self-gate (`03-JEV-DECISION-ENGINE-INTEGRATION.md`). Tier 0 static findings are never filtered, and staged-diff PR findings bypass the floor (they are deterministic bool decisions). Dropped findings are only counted: the `suppressed_heuristic_findings` run-stat field, the `suppressed_heuristic_findings` column in the SQLite history, the CLI JSON/Markdown report and the desktop status bar. Every finding additionally carries the engine that produced it (`tier0` | `tier1` | `mock`) and its confidence across all boundaries (`Finding.engine`, wire DTOs, history snapshots), and every scan session records the engine mode (`mock` | `jev` | `mock_fallback`) so the trend tooltip shows which engine produced a recorded score. The known-bad repository fixture keeps its exact 15-finding set (the weakest surviving heuristic confidence is exactly 0.5: `EDGE-PRM-002`).
+
 ---
 
 ## 6. Gate evidence log (commands as run)

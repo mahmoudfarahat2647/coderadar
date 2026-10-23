@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use coderadar_domain::{DomainError, Finding, PullRequestHygiene, RiskScore, RuleSpec};
+use coderadar_domain::{
+    DomainError, EvaluationEngine, Finding, PullRequestHygiene, RiskScore, RuleSpec,
+};
 
 use crate::ports::{BoxFuture, ChangesetGateway};
 
@@ -63,6 +65,10 @@ impl AssessPullRequest {
                 .with_title(rule.title.clone())
                 .with_description(violation.description.clone())
                 .with_confidence(violation.confidence)
+                // The PR assessment is deterministic static analysis over the
+                // staged index: provenance is tagged here, at construction,
+                // never left to a silent default (`CR-SPEC-09 §5`).
+                .with_engine(EvaluationEngine::Tier0Static)
                 .with_risk_score(RiskScore::from(rule.severity));
                 if let Some(cwe) = rule.primary_cwe() {
                     finding = finding.with_cwe(cwe);
@@ -176,6 +182,7 @@ mod tests {
         assert_eq!(breaking.title, "Breaking API Contract Change");
         assert_eq!(breaking.file_path, "src/api.ts");
         assert_eq!(breaking.line_start, 1);
+        assert_eq!(breaking.engine, EvaluationEngine::Tier0Static);
 
         let missing_tests = assessment
             .findings

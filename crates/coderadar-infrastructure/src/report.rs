@@ -35,6 +35,8 @@ pub struct ScanStatsReport {
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
     pub compliance_percent: u8,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
 }
 
 /// Findings counted by severity.
@@ -61,6 +63,8 @@ pub struct SessionReport {
     pub root_dir: String,
     /// Scan mode token (`full_scan`).
     pub mode: String,
+    /// Engine label of the composition root (`mock` | `jev` | `mock_fallback`).
+    pub engine_mode: String,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds.
@@ -92,6 +96,8 @@ pub struct FindingReport {
     pub title: String,
     /// Explanation (secrets are always masked).
     pub description: String,
+    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
+    pub engine: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
     /// Normalized risk score in `[0.0, 1.0]`.
@@ -172,11 +178,16 @@ impl ScanReport {
                 module_chunks: outcome.module_chunks,
                 duration_ms,
                 compliance_percent: summary.compliance_percent,
+                suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             },
             session: SessionReport {
                 id: session.id.clone(),
                 root_dir: session.root_dir.clone(),
                 mode: session.mode.as_str().to_string(),
+                engine_mode: session
+                    .engine_mode
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 started_at_unix_ms: session.started_at_unix_ms,
                 finished_at_unix_ms,
                 totals: SeverityTotals {
@@ -223,6 +234,7 @@ fn finding_report(finding: &Finding) -> FindingReport {
         cwe: finding.cwe.clone(),
         title: finding.title.clone(),
         description: finding.description.clone(),
+        engine: finding.engine.as_str().to_string(),
         confidence: finding.confidence,
         risk_score: finding.risk_score.value(),
     }
@@ -239,7 +251,9 @@ mod tests {
 
     fn sample_outcome() -> ScanOutcome {
         let mut session = ScanSession::new("scan-1", "/tmp/root", ScanMode::FullScan, 1_000)
-            .with_files_scanned(2);
+            .with_files_scanned(2)
+            .with_suppressed_heuristic_findings(2)
+            .with_engine_mode("mock");
         session.push(
             Finding::new("SEC-TOK-002", "src/a.ts", 3, 3)
                 .with_category(FindingCategory::Security)
@@ -279,10 +293,12 @@ mod tests {
         assert_eq!(value["scan"]["module_chunks"], 2);
         assert_eq!(value["scan"]["duration_ms"], 42);
         assert_eq!(value["scan"]["compliance_percent"], 50);
+        assert_eq!(value["scan"]["suppressed_heuristic_findings"], 2);
 
         assert_eq!(value["session"]["id"], "scan-1");
         assert_eq!(value["session"]["root_dir"], "/tmp/root");
         assert_eq!(value["session"]["mode"], "full_scan");
+        assert_eq!(value["session"]["engine_mode"], "mock");
         assert_eq!(value["session"]["started_at_unix_ms"], 1_000);
         assert_eq!(value["session"]["finished_at_unix_ms"], 1_500);
         assert_eq!(value["session"]["totals"]["total"], 1);
@@ -302,9 +318,19 @@ mod tests {
         assert_eq!(finding["cwe"], "CWE-798");
         assert_eq!(finding["title"], "Hardcoded Secrets & API Keys");
         assert_eq!(finding["description"], "found a thing [REDACTED]");
+        assert_eq!(finding["engine"], "tier0");
         let confidence = finding["confidence"].as_f64().expect("confidence number");
         assert!((confidence - 0.9).abs() < 0.001, "got {confidence}");
         assert_eq!(finding["risk_score"].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn an_unlabelled_session_reports_an_unknown_engine_mode() {
+        let manifest = RuleManifest::embedded().unwrap();
+        let mut outcome = sample_outcome();
+        outcome.session.engine_mode = None;
+        let report = ScanReport::from_scan(&outcome, &manifest, LayerMapSource::ConfigFile, 42);
+        assert_eq!(report.session.engine_mode, "unknown");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Check, Copy, ShieldAlert, FileText, CheckCheck, Wand2 } from "lucide-react";
 import { FindingDTO } from "../types";
+import { EngineChip } from "./EngineChip";
 
 interface FindingDrawerProps {
   finding: FindingDTO | null;
@@ -82,6 +83,7 @@ export const FindingDrawer: React.FC<FindingDrawerProps> = ({
                 {finding.cwe}
               </span>
             )}
+            <EngineChip finding={finding} />
             <span className="font-mono text-xs text-text-muted">{finding.rule_id}</span>
           </div>
           <h2 className="font-headline font-semibold text-sm text-text-primary leading-snug">

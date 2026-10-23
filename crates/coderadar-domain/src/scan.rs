@@ -30,12 +30,18 @@ pub struct ScanSession {
     pub root_dir: String,
     /// How the scan was triggered.
     pub mode: ScanMode,
+    /// Engine label recorded by the composition root (`mock` | `jev` |
+    /// `mock_fallback`), `None` when the caller does not declare one.
+    pub engine_mode: Option<String>,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds, `None` while still running.
     pub finished_at_unix_ms: Option<u64>,
     /// Number of files that were actually analysed.
     pub files_scanned: usize,
+    /// Heuristic findings dropped by the precision floor
+    /// (`CR-SPEC-09 §5`): they were produced, but not reported.
+    pub suppressed_heuristic_findings: usize,
     /// Findings produced by the scan.
     pub findings: Vec<Finding>,
 }
@@ -63,6 +69,11 @@ pub struct ScanSessionSummary {
     pub medium: usize,
     /// Number of low findings.
     pub low: usize,
+    /// Number of heuristic findings dropped by the precision floor.
+    pub suppressed_heuristic_findings: usize,
+    /// Engine label recorded for the session (`mock` | `jev` |
+    /// `mock_fallback`), `None` when not declared.
+    pub engine_mode: Option<String>,
     /// Compliance score of the scan, 0-100 (files without findings).
     pub compliance_percent: u8,
 }
@@ -79,9 +90,11 @@ impl ScanSession {
             id: id.into(),
             root_dir: root_dir.into(),
             mode,
+            engine_mode: None,
             started_at_unix_ms,
             finished_at_unix_ms: None,
             files_scanned: 0,
+            suppressed_heuristic_findings: 0,
             findings: Vec::new(),
         }
     }
@@ -89,6 +102,19 @@ impl ScanSession {
     /// Record how many files were analysed.
     pub fn with_files_scanned(mut self, files_scanned: usize) -> Self {
         self.files_scanned = files_scanned;
+        self
+    }
+
+    /// Record how many heuristic findings the precision floor dropped
+    /// (`CR-SPEC-09 §5`).
+    pub fn with_suppressed_heuristic_findings(mut self, suppressed: usize) -> Self {
+        self.suppressed_heuristic_findings = suppressed;
+        self
+    }
+
+    /// Record the engine label of the composition root that drove the scan.
+    pub fn with_engine_mode(mut self, engine_mode: impl Into<String>) -> Self {
+        self.engine_mode = Some(engine_mode.into());
         self
     }
 
@@ -139,6 +165,8 @@ impl ScanSession {
             high: self.count_severity(Severity::High),
             medium: self.count_severity(Severity::Medium),
             low: self.count_severity(Severity::Low),
+            suppressed_heuristic_findings: self.suppressed_heuristic_findings,
+            engine_mode: self.engine_mode.clone(),
             compliance_percent: self.compliance_percent(),
         }
     }

@@ -43,8 +43,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::path::absolute(&target)?
     };
     let started = std::time::Instant::now();
-    let report =
-        scan_project_streaming_with(&scan_root, engine.evaluator(), Duration::ZERO, |_| {})?;
+    // The engine mode is read lazily after the scan so a benchmark that fell
+    // back to Mock mid-run records `mock_fallback`, not `jev` (`CR-SPEC-12 §4`).
+    let engine_status = engine.status();
+    let report = scan_project_streaming_with(
+        &scan_root,
+        engine.evaluator(),
+        Duration::ZERO,
+        |_| {},
+        move || engine_status.mode().as_str().to_string(),
+    )?;
     let wall_ms = started.elapsed().as_millis();
     let snapshot = engine.status().snapshot();
 

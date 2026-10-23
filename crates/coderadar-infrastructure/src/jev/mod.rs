@@ -461,10 +461,14 @@ impl SemanticRuleEvaluator for JevRuleEvaluatorAdapter {
                 .iter()
                 .enumerate()
                 .map(|(index, rule)| {
+                    let findings = std::mem::take(&mut findings_per_rule[index])
+                        .into_iter()
+                        .map(|finding| finding.with_engine(EvaluationEngine::Tier1Semantic))
+                        .collect();
                     RuleEvaluationResult::new(
                         rule.id.clone(),
                         EvaluationEngine::Tier1Semantic,
-                        std::mem::take(&mut findings_per_rule[index]),
+                        findings,
                     )
                 })
                 .collect())
