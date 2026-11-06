@@ -837,24 +837,24 @@ fn build_preview(
 ) -> Result<PatchPreviewDTO, String> {
     let reader = Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
 
-    if coderadar_usecases::template_for(&rule_id).is_none() {
+    if coderadar_usecases::template_for(rule_id).is_none() {
         return Ok(no_proposal_preview(
-            &source,
-            &file_path,
-            &rule_id,
+            source,
+            file_path,
+            rule_id,
             format!("No deterministic fix template exists for rule `{rule_id}`."),
             Vec::new(),
         ));
     }
 
     let prepare = PreparePatch::new(reader);
-    let proposal = match block_on(prepare.prepare_from_source(&source, &file_path, &rule_id)) {
+    let proposal = match block_on(prepare.prepare_from_source(source, file_path, rule_id)) {
         Ok(proposal) => proposal,
         Err(error) => {
             return Ok(no_proposal_preview(
-                &source,
-                &file_path,
-                &rule_id,
+                source,
+                file_path,
+                rule_id,
                 format!(
                 "The deterministic template for rule `{rule_id}` does not match this file exactly."
             ),
@@ -863,7 +863,7 @@ fn build_preview(
         }
     };
 
-    let title = coderadar_usecases::template_for(&rule_id)
+    let title = coderadar_usecases::template_for(rule_id)
         .map(|template| template.title.to_string())
         .unwrap_or_else(|| format!("Deterministic fix for {rule_id}"));
 
