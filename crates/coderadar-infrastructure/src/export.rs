@@ -42,6 +42,14 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
         session_id: report.session.id.clone(),
         root_dir: report.session.root_dir.clone(),
         mode: report.session.mode.clone(),
+        engine_mode: report.session.engine_mode.clone(),
+        usage: report.session.usage.as_ref().map(|usage| {
+            (
+                usage.primary_batches,
+                usage.fallback_batches,
+                usage.fallback_failures,
+            )
+        }),
         started_at_unix_ms: report.session.started_at_unix_ms,
         finished_at_unix_ms: report.session.finished_at_unix_ms,
         files_scanned: report.scan.files_scanned,
@@ -49,6 +57,39 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
         module_chunks: report.scan.module_chunks,
         duration_ms: report.scan.duration_ms,
         compliance_percent: report.scan.compliance_percent,
+        completion: report.scan.completion.map(str::to_string),
+        analyzed_sources: report.scan.analyzed_sources.as_ref().map(|sources| {
+            sources
+                .iter()
+                .map(|(path, hash)| (path.clone(), hash.clone()))
+                .collect()
+        }),
+        consumed_sources: report.scan.consumed_sources.as_ref().map(|sources| {
+            sources
+                .iter()
+                .map(|(path, hash)| (path.clone(), hash.clone()))
+                .collect()
+        }),
+        coverage: report.scan.coverage.as_ref().map(|coverage| {
+            vec![
+                ("Discovered", coverage.discovered),
+                ("Supported", coverage.supported),
+                ("Analyzed", coverage.analyzed),
+                ("Unsupported", coverage.unsupported),
+                (
+                    match coverage.exclusions_complete {
+                        Some(true) => "Excluded",
+                        Some(false) => "Excluded (incomplete accounting)",
+                        None => "Excluded (accounting unknown)",
+                    },
+                    coverage.excluded,
+                ),
+                ("Unreadable", coverage.unreadable),
+                ("Oversized", coverage.oversized),
+                ("Invalid encoding", coverage.invalid_encoding),
+                ("Incomplete", coverage.incomplete),
+            ]
+        }),
         suppressed_heuristic_findings: report.scan.suppressed_heuristic_findings,
         findings: report
             .findings
@@ -64,6 +105,8 @@ pub fn markdown_from_report(report: &ScanReport) -> String {
                 title: finding.title.clone(),
                 description: finding.description.clone(),
                 confidence: finding.confidence,
+                model_probability: finding.model_probability,
+                heuristic_weight: finding.heuristic_weight,
                 risk_score: finding.risk_score,
             })
             .collect(),
@@ -131,7 +174,7 @@ mod tests {
     use super::{markdown_from_report, write_markdown_report};
     use crate::layer_map::LayerMapSource;
     use crate::pipeline::ScanOutcome;
-    use crate::report::ScanReport;
+    use crate::report::{ScanReport, UsageReport};
     use crate::rules_manifest::RuleManifest;
     use coderadar_domain::{Finding, FindingCategory, RiskScore, ScanMode, ScanSession, Severity};
 
@@ -172,18 +215,58 @@ mod tests {
     #[test]
     fn the_markdown_contains_the_summary_and_the_findings() {
         let report = report_with_two_findings();
-        assert_eq!(report.scan.compliance_percent, 50);
+        assert_eq!(report.scan.compliance_percent, Some(50));
         let markdown = markdown_from_report(&report);
         assert!(markdown.contains("## Executive summary"));
         assert!(markdown.contains("| Findings | 2 |"));
         assert!(markdown.contains(&format!(
             "| Compliance | {} % |",
-            report.scan.compliance_percent
+            report.scan.compliance_percent.unwrap()
         )));
         assert!(markdown.contains("| Suppressed low-precision findings | 0 |"));
         assert!(markdown.contains("SEC-TOK-002"));
         assert!(markdown.contains("ARCH-DEP-001"));
         assert!(markdown.contains("CWE-798"));
+    }
+
+    #[test]
+    fn markdown_reports_engine_and_cumulative_batch_outcomes() {
+        let mut report = report_with_two_findings();
+        report.session.engine_mode = "mock_fallback".into();
+        report.session.usage = Some(UsageReport {
+            primary_batches: 4,
+            fallback_batches: 2,
+            fallback_failures: 1,
+        });
+        let markdown = markdown_from_report(&report);
+        assert!(markdown.contains("| Engine mode | mock_fallback |"));
+        assert!(markdown.contains("| Primary batches | 4 |"));
+        assert!(markdown.contains("| Fallback batches | 2 |"));
+        assert!(markdown.contains("| Failed batches | 1 |"));
+    }
+
+    #[test]
+    fn markdown_distinguishes_unknown_usage_from_recorded_zeroes() {
+        let mut report = report_with_two_findings();
+        report.session.engine_mode = "unknown".into();
+        report.session.usage = None;
+        let markdown = markdown_from_report(&report);
+        assert!(markdown.contains("| Engine mode | unknown |"));
+        assert!(markdown.contains("| Primary batches | Unknown |"));
+        assert!(markdown.contains("| Fallback batches | Unknown |"));
+        assert!(markdown.contains("| Failed batches | Unknown |"));
+
+        report.session.engine_mode = "legacy|custom".into();
+        report.session.usage = Some(UsageReport {
+            primary_batches: 0,
+            fallback_batches: 0,
+            fallback_failures: 0,
+        });
+        let markdown = markdown_from_report(&report);
+        assert!(markdown.contains("| Engine mode | legacy\\|custom |"));
+        assert!(markdown.contains("| Primary batches | 0 |"));
+        assert!(markdown.contains("| Fallback batches | 0 |"));
+        assert!(markdown.contains("| Failed batches | 0 |"));
     }
 
     #[test]

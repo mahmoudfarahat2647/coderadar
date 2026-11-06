@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { KeyRound, X } from "lucide-react";
-import { EngineStatus, Tier2StatusDTO } from "../types";
-import { clearApiKey, clearTier2Key, getTier2Status, storeApiKey, storeTier2Key } from "../services/tauri";
+import { EngineStatus, ProviderDiagnostic, Tier2StatusDTO } from "../types";
+import { checkProviderDiagnostic, clearApiKey, clearTier2Key, getTier2Status, storeApiKey, storeTier2Key } from "../services/tauri";
+import { providerDiagnosticLabel } from "../utils/engineTone";
 
 interface ApiKeyDialogProps {
   open: boolean;
@@ -24,10 +25,18 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
   const [tier2, setTier2] = useState<Tier2StatusDTO | null>(null);
   const [geminiKey, setGeminiKey] = useState("");
   const [tier2Busy, setTier2Busy] = useState(false);
+  const [diagnostic, setDiagnostic] = useState<ProviderDiagnostic | null>(null);
+  const dialogGeneration = useRef(0);
 
   // Phase 8: the Tier 2 provider state is read when the dialog opens.
   useEffect(() => {
-    if (!open) return;
+    dialogGeneration.current += 1;
+    if (!open) {
+      setApiKey("");
+      setGeminiKey("");
+      setDiagnostic(null);
+      return;
+    }
     getTier2Status()
       .then((status) => setTier2(status))
       .catch(() => setTier2(null));
@@ -43,8 +52,8 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
       onStatusChange(status);
       setApiKey("");
       onClose();
-    } catch (err) {
-      onError(typeof err === "string" ? err : String(err));
+    } catch {
+      onError("Could not save the API key.");
     } finally {
       setBusy(false);
     }
@@ -57,8 +66,8 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
       const status = await clearApiKey();
       onStatusChange(status);
       onClose();
-    } catch (err) {
-      onError(typeof err === "string" ? err : String(err));
+    } catch {
+      onError("Could not remove the API key.");
     } finally {
       setBusy(false);
     }
@@ -71,8 +80,8 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
       const status = await storeTier2Key(geminiKey);
       setTier2(status);
       setGeminiKey("");
-    } catch (err) {
-      onError(typeof err === "string" ? err : String(err));
+    } catch {
+      onError("Could not save the Gemini key.");
     } finally {
       setTier2Busy(false);
     }
@@ -84,10 +93,25 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
     try {
       const status = await clearTier2Key();
       setTier2(status);
-    } catch (err) {
-      onError(typeof err === "string" ? err : String(err));
+    } catch {
+      onError("Could not remove the Gemini key.");
     } finally {
       setTier2Busy(false);
+    }
+  };
+
+  const handleCheck = async (synthetic: boolean) => {
+    if (busy) return;
+    const generation = dialogGeneration.current;
+    setBusy(true);
+    setDiagnostic(null);
+    try {
+      const result = await checkProviderDiagnostic(synthetic);
+      if (generation === dialogGeneration.current) setDiagnostic(result);
+    } catch {
+      if (generation === dialogGeneration.current) onError("Provider check could not be completed.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -125,7 +149,7 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
           {engineStatus?.api_key_configured && (
             <div className="p-2.5 rounded-md bg-surface-elevated border border-border-subtle font-mono">
               <span className="text-text-muted">Stored: </span>
-              <span className="text-secondary">{engineStatus.api_key_masked}</span>
+              <span className="text-secondary">Key configured</span>
             </div>
           )}
 
@@ -160,6 +184,15 @@ export const ApiKeyDialog: React.FC<ApiKeyDialogProps> = ({
             >
               Save Key
             </button>
+          </div>
+
+          <div className="pt-3 border-t border-border-subtle space-y-2">
+            <p className="text-text-muted">Authentication sends no source code. The synthetic check sends a fixed test prompt, not workspace content, and may incur provider charges.</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} onClick={() => handleCheck(false)} className="px-3 py-1.5 rounded-md border border-border-subtle disabled:opacity-50">Check Authentication</button>
+              <button type="button" disabled={busy} onClick={() => handleCheck(true)} className="px-3 py-1.5 rounded-md border border-border-subtle disabled:opacity-50">Run Synthetic Check</button>
+            </div>
+            {diagnostic && <p role="status" className="text-text-primary">{providerDiagnosticLabel(diagnostic.state)}{diagnostic.checked_at_unix_secs != null && ` Checked: ${new Date(diagnostic.checked_at_unix_secs * 1000).toLocaleString()}.`}</p>}
           </div>
 
           {/* Phase 8 - Tier 2 cloud fix provider */}

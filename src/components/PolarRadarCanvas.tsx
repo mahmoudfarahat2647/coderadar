@@ -25,7 +25,7 @@ interface PolarRadarCanvasProps {
   selectedFinding: FindingDTO | null;
   onHoverFinding: (id: string | null) => void;
   onSelectFinding: (finding: FindingDTO) => void;
-  cleanPassedPercent?: number;
+  cleanPassedPercent?: number | null;
   isScanning?: boolean;
 }
 
@@ -35,7 +35,7 @@ export const PolarRadarCanvas: React.FC<PolarRadarCanvasProps> = ({
   selectedFinding,
   onHoverFinding,
   onSelectFinding,
-  cleanPassedPercent = 98.4,
+  cleanPassedPercent = null,
   isScanning = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -136,7 +136,7 @@ export const PolarRadarCanvas: React.FC<PolarRadarCanvasProps> = ({
     ctx.fill();
 
     // 2. Clean Health Ambient Emerald Pulse (CR-SPEC-05 §2.B)
-    if (cleanPassedPercent >= 85) {
+    if (cleanPassedPercent != null && cleanPassedPercent >= 85) {
       const cleanGlow = ctx.createRadialGradient(
         centerX,
         centerY,
@@ -646,7 +646,7 @@ export const PolarRadarCanvas: React.FC<PolarRadarCanvasProps> = ({
         <div className="flex items-center space-x-3 px-3 py-1 rounded-full bg-surface-panel/85 backdrop-blur border border-border-subtle text-[11px] font-mono">
           <div className="flex items-center space-x-1 text-status-clean">
             <Shield className="w-3 h-3" />
-            <span>{cleanPassedPercent.toFixed(1)}% Clean</span>
+            <span>{cleanPassedPercent == null ? "Score unavailable" : `${cleanPassedPercent.toFixed(1)}% of analyzed files without findings`}</span>
           </div>
           <span className="text-text-muted">·</span>
           <div className="flex items-center space-x-1 text-text-primary">

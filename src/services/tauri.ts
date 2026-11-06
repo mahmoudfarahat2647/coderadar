@@ -12,6 +12,7 @@ import {
   PatchOutcomeDTO,
   PatchPreviewDTO,
   PatchProposalDTO,
+  ProviderDiagnostic,
   ScanMode,
   ScanReport,
   Tier2FixRequestDTO,
@@ -75,7 +76,6 @@ const FALLBACK_ENGINE_STATUS: EngineStatus = {
   max_latency_ms: 0,
   total_latency_ms: 0,
   api_key_configured: false,
-  api_key_masked: null,
   tier0_rules_count: 3,
   semantic_rules_count: 13,
   total_rules: 19,
@@ -181,6 +181,7 @@ export async function startScan(
  */
 export async function previewPatch(
   rootPath: string,
+  findingId: string,
   filePath: string,
   ruleId: string
 ): Promise<PatchPreviewDTO | null> {
@@ -188,6 +189,7 @@ export async function previewPatch(
     const { invoke } = await import("@tauri-apps/api/core");
     return await invoke<PatchPreviewDTO>("preview_patch", {
       rootPath,
+      findingId,
       filePath,
       ruleId,
     });
@@ -222,15 +224,11 @@ export async function getScanHistory(
   rootPath?: string
 ): Promise<HistoryPointDTO[]> {
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<HistoryPointDTO[]>("get_scan_history", {
-        limit,
-        rootPath: rootPath?.trim() || null,
-      });
-    } catch (e) {
-      console.warn("Failed to read scan history from Tauri:", e);
-    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<HistoryPointDTO[]>("get_scan_history", {
+      limit,
+      rootPath: rootPath?.trim() || null,
+    });
   }
   return [];
 }
@@ -288,6 +286,15 @@ export async function getTier2Status(): Promise<Tier2StatusDTO | null> {
     return await invoke<Tier2StatusDTO>("get_tier2_status");
   }
   return null;
+}
+
+/** Explicit provider check. Synthetic inference sends a fixed prompt, never source. */
+export async function checkProviderDiagnostic(synthetic: boolean): Promise<ProviderDiagnostic> {
+  if (isTauriEnvironment()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<ProviderDiagnostic>("check_provider_diagnostic", { synthetic });
+  }
+  throw new Error("Provider checks require the desktop app.");
 }
 
 /** Phase 8 - Store the Gemini API key in the OS keychain. */

@@ -23,6 +23,7 @@
 //! (invalid key `4xx`, unparsable body) fail immediately.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -32,7 +33,7 @@ use coderadar_domain::{
     CodeChunk, DomainError, EvaluationEngine, Finding, RuleEvaluationResult, RuleSpec,
 };
 use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::engine::EngineStatus;
 use crate::engine_rules::is_semantic_rule;
@@ -118,11 +119,20 @@ pub enum JevAnswer {
     /// `noul` probability answer.
     Noul {
         /// Probability of "yes" in `[0.0, 1.0]`.
+        #[serde(deserialize_with = "deserialize_probability")]
         noul: f32,
     },
     /// Answer type beyond the Phase 5 protocol; parsed and ignored.
     #[serde(other)]
     Other,
+}
+
+fn deserialize_probability<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom("invalid Jev probability"));
+    }
+    Ok(value as f32)
 }
 
 impl JevAnswer {
@@ -139,8 +149,44 @@ impl JevAnswer {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct JevResponse {
     /// Answer map keyed by question name (rule id).
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_answers")]
     pub answers: BTreeMap<String, JevAnswer>,
+}
+
+impl JevResponse {
+    pub(crate) fn matches_questions(&self, questions: &BTreeMap<String, JevQuestion>) -> bool {
+        self.answers.len() == questions.len()
+            && self.answers.iter().all(|(id, answer)| {
+                questions.contains_key(id)
+                    && matches!(answer, JevAnswer::Noul { noul } if noul.is_finite() && (0.0..=1.0).contains(noul))
+            })
+    }
+}
+
+fn deserialize_answers<'de, D>(deserializer: D) -> Result<BTreeMap<String, JevAnswer>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct AnswersVisitor;
+    impl<'de> serde::de::Visitor<'de> for AnswersVisitor {
+        type Value = BTreeMap<String, JevAnswer>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map of uniquely keyed answers")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut answers = BTreeMap::new();
+            while let Some((key, answer)) = map.next_entry::<String, JevAnswer>()? {
+                if answers.insert(key, answer).is_some() {
+                    return Err(serde::de::Error::custom("duplicate Jev answer key"));
+                }
+            }
+            Ok(answers)
+        }
+    }
+    deserializer.deserialize_map(AnswersVisitor)
 }
 
 /// The transport that performs one decision round trip.
@@ -178,7 +224,13 @@ impl JevTransportError {
 
 impl From<JevTransportError> for DomainError {
     fn from(error: JevTransportError) -> Self {
-        DomainError::External(error.message().to_string())
+        DomainError::External(
+            match error {
+                JevTransportError::Transient(_) => "Jev request failed temporarily",
+                JevTransportError::Permanent(_) => "Jev request failed permanently",
+            }
+            .to_string(),
+        )
     }
 }
 
@@ -200,6 +252,7 @@ impl HttpJevTransport {
             .timeout(config.request_timeout)
             .connect_timeout(config.request_timeout)
             .pool_max_idle_per_host(config.max_parallel)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| {
                 DomainError::External(format!("failed to build Jev HTTP client: {error}"))
@@ -226,17 +279,23 @@ impl JevTransport for HttpJevTransport {
             .bearer_auth(&self.api_key)
             .json(request)
             .send()
-            .map_err(|error| {
-                JevTransportError::Transient(format!("Jev request failed: {error}"))
-            })?;
+            .map_err(|_| JevTransportError::Transient("Jev request failed".to_string()))?;
 
         let status = response.status();
-        let body = response.text().map_err(|error| {
-            JevTransportError::Transient(format!("Jev body read failed: {error}"))
-        })?;
+        const MAX_RESPONSE_BYTES: u64 = 256 * 1024;
+        let mut body = Vec::new();
+        response
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| JevTransportError::Transient("Jev body read failed".into()))?;
+        if body.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(JevTransportError::Permanent(
+                "Jev response exceeds size limit".into(),
+            ));
+        }
 
         if !status.is_success() {
-            let message = format!("Jev HTTP {}: {}", status.as_u16(), truncate(&body, 200));
+            let message = format!("Jev HTTP {}", status.as_u16());
             return Err(if status.as_u16() == 429 || status.is_server_error() {
                 JevTransportError::Transient(message)
             } else {
@@ -244,9 +303,8 @@ impl JevTransport for HttpJevTransport {
             });
         }
 
-        serde_json::from_str::<JevResponse>(&body).map_err(|error| {
-            JevTransportError::Permanent(format!("Jev response parse failed: {error}"))
-        })
+        serde_json::from_slice::<JevResponse>(&body)
+            .map_err(|_| JevTransportError::Permanent("Jev response parse failed".into()))
     }
 }
 
@@ -344,6 +402,12 @@ impl JevRuleEvaluatorAdapter {
             }
         };
 
+        if !response.matches_questions(questions) {
+            return Err(DomainError::External(
+                "invalid or incomplete Jev answers".to_string(),
+            ));
+        }
+
         let answers = response
             .answers
             .into_iter()
@@ -436,6 +500,10 @@ impl SemanticRuleEvaluator for JevRuleEvaluatorAdapter {
                 })
                 .collect();
 
+            if questions.len() != rules.iter().filter(|rule| is_semantic_rule(rule)).count() {
+                return Err(DomainError::invariant("duplicate Jev rule id"));
+            }
+
             if !questions.is_empty() && !chunks.is_empty() {
                 for evaluation in self.evaluate_all(&chunks, &questions)? {
                     let chunk = &chunks[evaluation.index];
@@ -445,14 +513,17 @@ impl SemanticRuleEvaluator for JevRuleEvaluatorAdapter {
                             continue;
                         };
                         let rule = &rules[position];
-                        findings_per_rule[position].push(build_finding(
-                            rule,
-                            &chunk.file_path,
-                            chunk.start_line,
-                            chunk.end_line,
-                            describe(rule, confidence),
-                            confidence,
-                        ));
+                        findings_per_rule[position].push(
+                            build_finding(
+                                rule,
+                                &chunk.file_path,
+                                chunk.start_line,
+                                chunk.end_line,
+                                describe(rule, confidence),
+                                confidence,
+                            )
+                            .with_model_probability(confidence),
+                        );
                     }
                 }
             }
@@ -479,22 +550,10 @@ impl SemanticRuleEvaluator for JevRuleEvaluatorAdapter {
 /// Build the generic, source-free description attached to a Jev finding.
 fn describe(rule: &RuleSpec, confidence: f32) -> String {
     format!(
-        "Jev Tier 1 semantic match (confidence {:.0}%): {}",
+        "Jev Tier 1 semantic match (model probability {:.0}%): {}",
         confidence * 100.0,
         rule.assertion
     )
-}
-
-/// Truncate a body snippet for an error message without splitting UTF-8.
-fn truncate(value: &str, max: usize) -> String {
-    if value.len() <= max {
-        return value.to_string();
-    }
-    let mut end = max;
-    while !value.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    format!("{}…", &value[..end])
 }
 
 #[cfg(test)]
@@ -516,6 +575,40 @@ mod tests {
     use crate::engine::{EngineMode, EngineStatus};
     use crate::redaction::REDACTED_SECRET;
     use crate::rules_manifest::RuleManifest;
+
+    #[test]
+    fn wire_probabilities_are_checked_before_float_narrowing() {
+        for value in ["1.0000000000000002", "-1e-50"] {
+            let json = format!(r#"{{"answers":{{"probe":{{"type":"noul","noul":{value}}}}}}}"#);
+            assert!(
+                serde_json::from_str::<JevResponse>(&json).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn injected_transport_errors_do_not_expose_sensitive_content() {
+        let adapter = adapter_with(
+            JevConfig {
+                max_retries: 0,
+                ..JevConfig::default()
+            },
+            Arc::new(ScriptedTransport {
+                answers: Mutex::new(BTreeMap::new()),
+                calls: AtomicUsize::new(0),
+                error: Some(JevTransportError::Permanent(
+                    "secret source and credential".into(),
+                )),
+            }),
+        );
+        let error = crate::executor::block_on(adapter.evaluate_batch(
+            vec![CodeChunk::new("a.ts", "typescript", 1, 1, "x")],
+            &[rule("SEC-JWT-003")],
+        ))
+        .unwrap_err();
+        assert!(!format!("{error:?}").contains("secret"));
+    }
 
     /// Transport with scripted answers and a recorded request log.
     struct ScriptedTransport {
@@ -563,12 +656,17 @@ mod tests {
     }
 
     impl JevTransport for ScriptedTransport {
-        fn decide(&self, _request: &JevRequest) -> Result<JevResponse, JevTransportError> {
+        fn decide(&self, request: &JevRequest) -> Result<JevResponse, JevTransportError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             if let Some(error) = self.error.clone() {
                 return Err(error);
             }
-            let answers = self.answers.lock().expect("answers lock").clone();
+            let mut answers = self.answers.lock().expect("answers lock").clone();
+            for id in request.questions.keys() {
+                answers
+                    .entry(id.clone())
+                    .or_insert(JevAnswer::Noul { noul: 0.0 });
+            }
             Ok(JevResponse { answers })
         }
     }
@@ -644,6 +742,8 @@ mod tests {
         assert_eq!(finding.line_end, 9);
         assert_eq!(finding.severity, rule("SEC-JWT-003").severity);
         assert!((finding.confidence - 0.92).abs() < f32::EPSILON);
+        assert_eq!(finding.model_probability, Some(0.92));
+        assert_eq!(finding.heuristic_weight, None);
         assert_eq!(results[1].rule_id, "SEC-XSS-004");
         assert!(results[1].findings.is_empty());
     }
@@ -855,7 +955,11 @@ mod tests {
                 .expect("questions lock")
                 .push(questions);
             Ok(JevResponse {
-                answers: BTreeMap::new(),
+                answers: request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), JevAnswer::Noul { noul: 0.0 }))
+                    .collect(),
             })
         }
     }

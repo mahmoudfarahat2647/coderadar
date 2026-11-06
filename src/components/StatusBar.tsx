@@ -1,11 +1,13 @@
 import React from "react";
 import { KeyRound } from "lucide-react";
-import { EngineStatus, ScanStats } from "../types";
-import { engineTone } from "../utils/engineTone";
+import { EngineStatus, ScanProvenance, ScanReport, ScanStats } from "../types";
+import { engineModeLabel, engineTone } from "../utils/engineTone";
 
 interface StatusBarProps {
   engineStatus: EngineStatus | null;
   scanStats: ScanStats | null;
+  session: ScanProvenance | null;
+  historyStatus?: ScanReport["history_status"];
   isScanning: boolean;
   onOpenApiKey: () => void;
 }
@@ -13,13 +15,15 @@ interface StatusBarProps {
 export const StatusBar: React.FC<StatusBarProps> = ({
   engineStatus,
   scanStats,
+  session,
+  historyStatus,
   isScanning,
   onOpenApiKey,
 }) => {
   const tone = engineTone(engineStatus);
 
   return (
-    <footer className="h-7 border-t border-border-subtle bg-surface-canvas px-4 flex items-center justify-between text-[11px] font-mono text-text-muted select-none z-20">
+    <footer className="min-h-7 border-t border-border-subtle bg-surface-canvas px-4 flex flex-wrap items-center justify-between text-[11px] font-mono text-text-muted select-none z-20">
       {/* Left: Daemon & Ruleset & Engine Mode */}
       <div className="flex items-center space-x-3 truncate">
         <div className="flex items-center space-x-1.5 shrink-0">
@@ -47,7 +51,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           title={engineStatus?.reason || engineStatus?.description}
         >
           <span className={`w-1.5 h-1.5 rounded-full ${tone.dot}`} />
-          <span className="font-semibold">Engine: {engineStatus?.badge || "Mock Mode"}</span>
+          <span className="font-semibold">Provider: {engineStatus?.badge || tone.label}</span>
           {engineStatus && (
             <span className="text-[10px] text-text-muted hidden lg:inline">
               ({engineStatus.tier0_rules_count} Tier 0 +{" "}
@@ -56,6 +60,23 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           )}
         </div>
       </div>
+
+      {(historyStatus === "in_memory" || historyStatus === "save_failed") && (
+        <div role="status" className="w-full order-last py-1 text-status-high">
+          {historyStatus === "in_memory"
+            ? "History is temporary and will be lost when the app closes. Export the report and check access to the history database, then restart the app."
+            : "This scan was not saved to history. Export the report and check access to the history database before scanning again."}
+        </div>
+      )}
+      {session && (
+        <div className="w-full order-last py-1" title={session.usage
+          ? `Primary batches: ${session.usage.primary_batches}; Fallback batches: ${session.usage.fallback_batches}; Fallback failures: ${session.usage.fallback_failures}`
+          : "Usage not recorded"}>
+          Scan: {engineModeLabel(session.engine_mode)}. {session.usage
+            ? `Primary batches: ${session.usage.primary_batches}; Fallback batches: ${session.usage.fallback_batches}; Fallback failures: ${session.usage.fallback_failures}`
+            : "Usage not recorded"}
+        </div>
+      )}
 
       {/* Right: Telemetry & Memory */}
       <div className="flex items-center space-x-3 shrink-0 tabular-nums">

@@ -19,6 +19,7 @@ interface DiffModalProps {
   preview: PatchPreviewDTO | null;
   rootPath: string;
   finding: FindingDTO | null;
+  fixesAvailable: boolean;
   onPreviewGenerated: (preview: PatchPreviewDTO) => void;
   onClose: () => void;
   onApplied: (outcome: PatchOutcomeDTO) => void;
@@ -53,6 +54,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   preview,
   rootPath,
   finding,
+  fixesAvailable,
   onPreviewGenerated,
   onClose,
   onApplied,
@@ -107,7 +109,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   };
 
   const handleApply = async () => {
-    if (busy || !proposal) return;
+    if (busy || !proposal || !fixesAvailable) return;
     setBusy(true);
     setOutcome(null);
     try {
@@ -130,7 +132,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
   };
 
   const handleGenerate = async () => {
-    if (generating || !finding) return;
+    if (generating || !finding || !fixesAvailable) return;
     if (provider === "gemini" && !allowCloud) {
       onError(
         "Cloud fix generation needs explicit consent: review the privacy notice and tick the consent box first."
@@ -141,6 +143,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
     try {
       const generated = await generateFix({
         root_path: rootPath,
+        finding_id: finding.id,
         file_path: preview.file_path,
         rule_id: preview.rule_id,
         title: finding.title,
@@ -204,6 +207,11 @@ export const DiffModal: React.FC<DiffModalProps> = ({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
+          {!fixesAvailable && (
+            <div role="alert" className="p-3 rounded-lg bg-status-medium/10 border border-status-medium/30 text-text-secondary">
+              Fixes are unavailable for staged scans or while a scan is running.
+            </div>
+          )}
           {/* Fingerprint strip */}
           <div className="flex items-center flex-wrap gap-2">
             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-surface-elevated text-text-muted border border-border-subtle">
@@ -307,6 +315,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
                   onClick={handleGenerate}
                   disabled={
                     generating ||
+                    !fixesAvailable ||
                     !finding ||
                     (provider === "gemini" && !allowCloud)
                   }
@@ -387,7 +396,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
         <div className="p-3 border-t border-border-subtle bg-surface-canvas flex items-center justify-end gap-2">
           <button
             onClick={handleCopy}
-            disabled={busy || !hasProposal}
+            disabled={busy || !hasProposal || !fixesAvailable}
             className="px-3 py-1.5 rounded-md bg-surface-elevated border border-border-subtle text-text-primary hover:bg-surface-overlay transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1.5 text-xs"
           >
             {copied ? (
@@ -405,7 +414,7 @@ export const DiffModal: React.FC<DiffModalProps> = ({
 
           <button
             onClick={handleApply}
-            disabled={busy || !hasProposal}
+            disabled={busy || !hasProposal || !fixesAvailable}
             className="px-3 py-1.5 rounded-md bg-primary hover:bg-[#239f63] text-white text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-glow disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy ? (

@@ -9,13 +9,35 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use coderadar_domain::{CodeChunk, DomainError, RuleEvaluationResult, RuleSpec};
+use coderadar_domain::{CodeChunk, DomainError, RuleEvaluationResult, RuleSpec, ScanUsage};
 use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
 use serde::Serialize;
 
 use crate::jev::{JevConfig, JevRuleEvaluatorAdapter};
 use crate::keychain::{resolve_api_key, CredentialStore, KeyringCredentialStore};
 use crate::mock::MockRuleEvaluator;
+use crate::provider_diagnostics::JevDiagnostics;
+
+/// OpenRouter's authenticated key metadata endpoint.
+pub const DEFAULT_METADATA_ENDPOINT: &str = "https://openrouter.ai/api/v1/key";
+
+impl JevDiagnostics {
+    /// Resolve the credential using the same keychain/environment precedence as scans.
+    pub fn from_store(store: &dyn CredentialStore) -> Self {
+        let key = resolve_api_key(store);
+        Self::new(
+            DEFAULT_METADATA_ENDPOINT,
+            crate::jev::DEFAULT_ENDPOINT,
+            crate::jev::DEFAULT_MODEL,
+            key.as_deref(),
+        )
+    }
+
+    /// Resolve the credential from the operating system keychain or environment.
+    pub fn from_environment() -> Self {
+        Self::from_store(&KeyringCredentialStore::new())
+    }
+}
 
 /// Which engine is currently answering evaluations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +48,8 @@ pub enum EngineMode {
     Tier1Live,
     /// Jev was configured but a call failed; Mock answered instead.
     MockFallback,
+    /// A key is configured but inference has not yet succeeded.
+    Tier1Untested,
 }
 
 impl EngineMode {
@@ -34,6 +58,7 @@ impl EngineMode {
             Self::MockPrimary => 0,
             Self::Tier1Live => 1,
             Self::MockFallback => 2,
+            Self::Tier1Untested => 3,
         }
     }
 
@@ -41,6 +66,7 @@ impl EngineMode {
         match value {
             1 => Self::Tier1Live,
             2 => Self::MockFallback,
+            3 => Self::Tier1Untested,
             _ => Self::MockPrimary,
         }
     }
@@ -51,6 +77,7 @@ impl EngineMode {
             Self::MockPrimary => "mock",
             Self::Tier1Live => "jev",
             Self::MockFallback => "mock_fallback",
+            Self::Tier1Untested => "jev_untested",
         }
     }
 }
@@ -107,7 +134,10 @@ impl EngineStatus {
 
     /// Record that Jev answered again after a fallback.
     pub fn record_recovery(&self) {
-        if self.mode() == EngineMode::MockFallback {
+        if matches!(
+            self.mode(),
+            EngineMode::MockFallback | EngineMode::Tier1Untested
+        ) {
             self.mode
                 .store(EngineMode::Tier1Live.as_u8(), Ordering::Relaxed);
             if let Ok(mut guard) = self.reason.lock() {
@@ -128,6 +158,7 @@ impl EngineStatus {
                 EngineMode::Tier1Live => "Jev Tier 1 (live)",
                 EngineMode::MockFallback => "Mock Mode (fallback)",
                 EngineMode::MockPrimary => "Mock Mode",
+                EngineMode::Tier1Untested => "Jev Tier 1 (untested)",
             }
             .to_string(),
             reason,
@@ -143,7 +174,7 @@ impl EngineStatus {
 /// Serializable engine telemetry consumed by the Tauri command layer.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct EngineStatusSnapshot {
-    /// `mock` | `jev` | `mock_fallback`.
+    /// `mock` | `jev` | `jev_untested` | `mock_fallback`.
     pub mode: String,
     /// True when live Jev is answering.
     pub is_live: bool,
@@ -175,6 +206,60 @@ pub struct FallbackRuleEvaluator {
     primary: Arc<dyn SemanticRuleEvaluator>,
     fallback: Arc<dyn SemanticRuleEvaluator>,
     status: Arc<EngineStatus>,
+    usage: Option<Arc<ScanEngineUsage>>,
+}
+
+/// Cumulative semantic evaluator usage, owned by one scan.
+#[derive(Debug, Default)]
+pub struct ScanEngineUsage {
+    primary_batches: AtomicU64,
+    fallback_batches: AtomicU64,
+    fallback_failures: AtomicU64,
+}
+
+/// A snapshot of cumulative scan usage; batches may contain several chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScanEngineUsageSnapshot {
+    /// Batches successfully answered by the primary evaluator.
+    pub primary_batches: u64,
+    /// Batches successfully answered by the fallback evaluator.
+    pub fallback_batches: u64,
+    /// Batches for which both evaluators failed.
+    pub fallback_failures: u64,
+}
+
+impl ScanEngineUsage {
+    /// Return cumulative usage for this scan.
+    pub fn snapshot(&self) -> ScanEngineUsageSnapshot {
+        ScanEngineUsageSnapshot {
+            primary_batches: self.primary_batches.load(Ordering::Relaxed),
+            fallback_batches: self.fallback_batches.load(Ordering::Relaxed),
+            fallback_failures: self.fallback_failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl ScanEngineUsageSnapshot {
+    /// Report label derived from this scan, including an untested live engine.
+    pub fn legacy_engine_mode(&self) -> &'static str {
+        if self.fallback_batches > 0 || self.fallback_failures > 0 {
+            "mock_fallback"
+        } else if self.primary_batches > 0 {
+            "jev"
+        } else {
+            "jev_untested"
+        }
+    }
+}
+
+impl From<ScanEngineUsageSnapshot> for ScanUsage {
+    fn from(value: ScanEngineUsageSnapshot) -> Self {
+        Self {
+            primary_batches: value.primary_batches,
+            fallback_batches: value.fallback_batches,
+            fallback_failures: value.fallback_failures,
+        }
+    }
 }
 
 impl FallbackRuleEvaluator {
@@ -188,7 +273,20 @@ impl FallbackRuleEvaluator {
             primary,
             fallback,
             status,
+            usage: None,
         }
+    }
+
+    /// Construct an evaluator and an independent usage handle for one scan.
+    pub fn new_scoped(
+        primary: Arc<dyn SemanticRuleEvaluator>,
+        fallback: Arc<dyn SemanticRuleEvaluator>,
+        status: Arc<EngineStatus>,
+    ) -> (Self, Arc<ScanEngineUsage>) {
+        let usage = Arc::new(ScanEngineUsage::default());
+        let mut evaluator = Self::new(primary, fallback, status);
+        evaluator.usage = Some(Arc::clone(&usage));
+        (evaluator, usage)
     }
 }
 
@@ -201,12 +299,24 @@ impl SemanticRuleEvaluator for FallbackRuleEvaluator {
         Box::pin(async move {
             match self.primary.evaluate_batch(chunks.clone(), rules).await {
                 Ok(results) => {
+                    if let Some(usage) = &self.usage {
+                        usage.primary_batches.fetch_add(1, Ordering::Relaxed);
+                    }
                     self.status.record_recovery();
                     Ok(results)
                 }
-                Err(error) => {
-                    self.status.record_fallback(error.to_string());
-                    self.fallback.evaluate_batch(chunks, rules).await
+                Err(_) => {
+                    self.status.record_fallback("Jev request failed");
+                    let result = self.fallback.evaluate_batch(chunks, rules).await;
+                    if let Some(usage) = &self.usage {
+                        let counter = if result.is_ok() {
+                            &usage.fallback_batches
+                        } else {
+                            &usage.fallback_failures
+                        };
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    result
                 }
             }
         })
@@ -217,6 +327,7 @@ impl SemanticRuleEvaluator for FallbackRuleEvaluator {
 pub struct SemanticEngine {
     evaluator: Arc<dyn SemanticRuleEvaluator>,
     status: Arc<EngineStatus>,
+    primary: Option<Arc<dyn SemanticRuleEvaluator>>,
 }
 
 impl SemanticEngine {
@@ -225,6 +336,7 @@ impl SemanticEngine {
         Self {
             evaluator: Arc::new(MockRuleEvaluator::new()),
             status: Arc::new(EngineStatus::new(EngineMode::MockPrimary)),
+            primary: None,
         }
     }
 
@@ -234,17 +346,18 @@ impl SemanticEngine {
     /// Returns [`DomainError::External`] when the HTTP client cannot be built
     /// (for example an invalid timeout configuration).
     pub fn live(config: JevConfig) -> Result<Self, DomainError> {
-        let status = Arc::new(EngineStatus::new(EngineMode::Tier1Live));
+        let status = Arc::new(EngineStatus::new(EngineMode::Tier1Untested));
         let primary: Arc<dyn SemanticRuleEvaluator> =
             Arc::new(JevRuleEvaluatorAdapter::new(config, Arc::clone(&status))?);
         let fallback: Arc<dyn SemanticRuleEvaluator> = Arc::new(MockRuleEvaluator::new());
         Ok(Self {
             evaluator: Arc::new(FallbackRuleEvaluator::new(
-                primary,
+                Arc::clone(&primary),
                 fallback,
                 Arc::clone(&status),
             )),
             status,
+            primary: Some(primary),
         })
     }
 
@@ -270,6 +383,20 @@ impl SemanticEngine {
     /// The evaluator to hand to the scan pipeline / router.
     pub fn evaluator(&self) -> Arc<dyn SemanticRuleEvaluator> {
         Arc::clone(&self.evaluator)
+    }
+
+    /// Create a fresh, isolated live/fallback evaluator and usage for one scan.
+    /// Returns `None` for the offline engine; use [`Self::evaluator`] there.
+    pub fn scoped_evaluator(
+        &self,
+    ) -> Option<(Arc<dyn SemanticRuleEvaluator>, Arc<ScanEngineUsage>)> {
+        let primary = Arc::clone(self.primary.as_ref()?);
+        let (evaluator, usage) = FallbackRuleEvaluator::new_scoped(
+            primary,
+            Arc::new(MockRuleEvaluator::new()),
+            Arc::clone(&self.status),
+        );
+        Some((Arc::new(evaluator), usage))
     }
 
     /// The shared telemetry handle.
@@ -383,10 +510,7 @@ mod tests {
         assert!(snapshot.degraded);
         assert_eq!(snapshot.badge, "Mock Mode (fallback)");
         assert_eq!(snapshot.fallback_events, 1);
-        assert_eq!(
-            snapshot.reason.as_deref(),
-            Some("external service error: offline")
-        );
+        assert_eq!(snapshot.reason.as_deref(), Some("Jev request failed"));
     }
 
     #[test]

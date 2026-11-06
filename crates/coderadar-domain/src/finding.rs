@@ -30,8 +30,12 @@ pub struct Finding {
     pub title: String,
     /// Longer explanation.
     pub description: String,
-    /// Evaluator confidence in `[0.0, 1.0]`.
+    /// Legacy evaluator score in `[0.0, 1.0]`; its meaning depends on the producer.
     pub confidence: f32,
+    /// Raw model probability, when supplied by a model evaluator.
+    pub model_probability: Option<f32>,
+    /// Uncalibrated heuristic weight, when supplied by a heuristic evaluator.
+    pub heuristic_weight: Option<f32>,
     /// Engine that actually produced the finding, as it crossed the
     /// evaluation boundary (`CR-SPEC-09 §5`).
     pub engine: EvaluationEngine,
@@ -63,6 +67,8 @@ impl Finding {
             title: String::new(),
             description: String::new(),
             confidence: 1.0,
+            model_probability: None,
+            heuristic_weight: None,
             engine: EvaluationEngine::default(),
             risk_score: RiskScore::default(),
         }
@@ -118,7 +124,25 @@ impl Finding {
         } else {
             confidence.clamp(0.0, 1.0)
         };
+        self.model_probability = None;
+        self.heuristic_weight = None;
         self
+    }
+
+    /// Record a model probability and retain the legacy score for existing consumers.
+    #[must_use]
+    pub fn with_model_probability(self, probability: f32) -> Self {
+        let mut finding = self.with_confidence(probability);
+        finding.model_probability = Some(finding.confidence);
+        finding
+    }
+
+    /// Record an uncalibrated heuristic weight and retain the legacy score.
+    #[must_use]
+    pub fn with_heuristic_weight(self, weight: f32) -> Self {
+        let mut finding = self.with_confidence(weight);
+        finding.heuristic_weight = Some(finding.confidence);
+        finding
     }
 
     /// Set the engine that produced the finding.

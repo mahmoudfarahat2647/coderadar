@@ -21,6 +21,7 @@ import {
   PatchPreviewDTO,
   PrHygieneReport,
   ScanMode,
+  ScanProvenance,
   ScanReport,
   ScanStats,
   SeverityTotals,
@@ -31,17 +32,16 @@ import {
   getEngineStatus,
   getScanHistory,
   isTauriEnvironment,
-  listenToScanBatches,
   openFolderDialog,
   pickReportPath,
   previewPatch,
-  startScan,
 } from "./services/tauri";
-import { AlertCircle, X, Loader2 } from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 
 export const App: React.FC = () => {
   const [targetPath, setTargetPath] = useState<string>("tests/fixtures/known-bad-repo");
   const [scanMode, setScanMode] = useState<ScanMode>("full_scan");
+  const [scannedMode, setScannedMode] = useState<ScanMode | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [findings, setFindings] = useState<FindingDTO[]>([]);
   const [selectedFinding, setSelectedFinding] = useState<FindingDTO | null>(null);
@@ -52,15 +52,23 @@ export const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
   const [scanStats, setScanStats] = useState<ScanStats | null>(null);
+  const [scanSession, setScanSession] = useState<ScanProvenance | null>(null);
+  const [historyStatus, setHistoryStatus] = useState<ScanReport["history_status"]>();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoBanner, setInfoBanner] = useState<string | null>(null);
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
   const [diffPreview, setDiffPreview] = useState<PatchPreviewDTO | null>(null);
   const [diffFinding, setDiffFinding] = useState<FindingDTO | null>(null);
   const [prHygiene, setPrHygiene] = useState<PrHygieneReport | null>(null);
-  const [patchBusy, setPatchBusy] = useState<boolean>(false);
   const [historyPoints, setHistoryPoints] = useState<HistoryPointDTO[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [scannedPath, setScannedPath] = useState<string>("");
+  const scanGenerationRef = useRef(0);
+  const scanGeneration = scanGenerationRef.current;
+  const previewGenerationRef = useRef(0);
+  const previewGeneration = previewGenerationRef.current;
 
   const refreshEngineStatus = () => {
     getEngineStatus().then((s) => {
@@ -72,17 +80,6 @@ export const App: React.FC = () => {
   // the badge the moment Jev drops instead of only at scan end.
   const isScanningRef = useRef(false);
   isScanningRef.current = isScanning;
-
-  // The workspace of the last scan, readable from the async history callbacks
-  // (they are registered once, so they would otherwise close over a stale
-  // empty path).
-  const scannedPathRef = useRef<string>("");
-  scannedPathRef.current = scannedPath;
-
-  // The workspace currently in view, readable from the async history
-  // callbacks as well.
-  const targetPathRef = useRef<string>("");
-  targetPathRef.current = targetPath;
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -100,62 +97,23 @@ export const App: React.FC = () => {
       if (s) setEngineStatus(s);
     });
 
-    // Listen to streaming scan events from the Rust 100 ms throttler
-    let unlisten: (() => void) | undefined;
-    listenToScanBatches(
-      (batch: FindingBatch) => {
-        setFindings((prev) => {
-          const map = new Map<string, FindingDTO>();
-          prev.forEach((f) => map.set(f.id, f));
-          batch.findings.forEach((f) => {
-            if (!map.has(f.id)) {
-              map.set(f.id, f);
-            }
-          });
-          return Array.from(map.values());
-        });
-      },
-      (report: ScanReport) => {
-        setIsScanning(false);
-        setScanStats(report.scan);
-        setPrHygiene(report.pr_hygiene ?? null);
-        // Refresh the engine badge: a scan may have triggered a Mock fallback.
-        refreshEngineStatus();
-        // The finished scan is now persisted in the SQLite history.
-        getScanHistory(20, scannedPathRef.current || targetPathRef.current).then(
-          (points) => {
-            setHistoryPoints(points);
-          }
-        );
-        if (report.findings && report.findings.length > 0) {
-          setFindings((prev) => {
-            const map = new Map<string, FindingDTO>();
-            prev.forEach((f) => map.set(f.id, f));
-            report.findings.forEach((f) => map.set(f.id, f));
-            return Array.from(map.values());
-          });
-        }
-      },
-      (err: string) => {
-        setIsScanning(false);
-        setErrorMessage(err);
-      }
-    ).then((cleanup) => {
-      unlisten = cleanup;
-    });
-
-    return () => {
-      if (unlisten) unlisten();
-    };
   }, []);
 
   // The trend follows the workspace in view: the history is queried per
   // workspace, so switching projects reloads the points of that project.
   useEffect(() => {
+    let active = true;
+    setHistoryLoading(true);
+    setHistoryError(null);
     getScanHistory(20, targetPath.trim()).then((points) => {
-      setHistoryPoints(points);
+      if (active) setHistoryPoints(points);
+    }).catch((error: unknown) => {
+      if (active) setHistoryError(String(error));
+    }).finally(() => {
+      if (active) setHistoryLoading(false);
     });
-  }, [targetPath]);
+    return () => { active = false; };
+  }, [targetPath, historyRevision]);
 
   // Handle Tab Switch
   const handleTabChange = (tab: string) => {
@@ -208,27 +166,24 @@ export const App: React.FC = () => {
   // Ask the Rust engine for a safe remediation proposal and open the diff modal
   const handleProposeFix = async (finding: FindingDTO) => {
     setErrorMessage(null);
-    // Patch the workspace that produced the finding, never a path typed later.
-    const root = scannedPath;
-    if (!root) {
-      setErrorMessage("Run a scan before proposing a remediation.");
+    if (isScanning || scannedMode !== "full_scan" || !scannedPath) {
+      setErrorMessage("Fix previews are available only after a full scan completes. Staged findings cannot be fixed against working-tree contents.");
       return;
     }
-    setPatchBusy(true);
+    const generation = ++previewGenerationRef.current;
     try {
-      const preview = await previewPatch(root, finding.file, finding.rule_id);
+      const preview = await previewPatch(scannedPath, finding.id, finding.file, finding.rule_id);
+      if (scanGeneration !== scanGenerationRef.current || generation !== previewGenerationRef.current) return;
       if (!preview) {
-        setErrorMessage(
-          "Patch preview is only available in the CodeRadar desktop app (Tauri runtime)."
-        );
+        setErrorMessage("Patch preview is only available in the CodeRadar desktop app (Tauri runtime).");
         return;
       }
       setDiffFinding(finding);
       setDiffPreview(preview);
     } catch (err) {
-      setErrorMessage(typeof err === "string" ? err : String(err));
-    } finally {
-      setPatchBusy(false);
+      if (scanGeneration === scanGenerationRef.current && generation === previewGenerationRef.current) {
+        setErrorMessage(typeof err === "string" ? err : String(err));
+      }
     }
   };
 
@@ -259,25 +214,72 @@ export const App: React.FC = () => {
   const handleStartScan = async () => {
     if (!targetPath.trim()) return;
 
+    const generation = ++scanGenerationRef.current;
+    ++previewGenerationRef.current;
     setErrorMessage(null);
     setInfoBanner(null);
     setFindings([]);
+    setScanStats(null);
+    setScanSession(null);
+    setHistoryStatus(undefined);
     setPrHygiene(null);
+    setDiffPreview(null);
+    setDiffFinding(null);
+    setSelectedFinding(null);
     setIsScanning(true);
     // The findings are relative to the workspace that is actually scanned:
     // patches must be applied to that root, not to a path typed later on.
     setScannedPath(targetPath.trim());
+    setScannedMode(scanMode);
 
     if (isTauriEnvironment()) {
+      let unlisten: (() => void) | undefined;
+      let acceptingBatches = true;
       try {
-        await startScan(targetPath, scanMode);
+        const token = crypto.randomUUID();
+        const { listen } = await import("@tauri-apps/api/event");
+        const { invoke } = await import("@tauri-apps/api/core");
+        unlisten = await listen<FindingBatch>(`coderadar://scan-provisional-${token}`, ({ payload }) => {
+          if (!acceptingBatches || generation !== scanGenerationRef.current) return;
+          setFindings((prev) => {
+            if (!acceptingBatches || generation !== scanGenerationRef.current) return prev;
+            const map = new Map(prev.map((finding) => [finding.id, finding]));
+            payload.findings.forEach((finding) => {
+              if (!map.has(finding.id)) map.set(finding.id, finding);
+            });
+            return Array.from(map.values());
+          });
+        });
+        if (generation !== scanGenerationRef.current) return;
+        const report = await invoke<ScanReport>("start_scan", { path: targetPath.trim(), mode: scanMode, eventToken: token });
+        if (generation !== scanGenerationRef.current) return;
+        acceptingBatches = false;
+        setIsScanning(false);
+        setScanStats(report.scan);
+        setScanSession(report.session);
+        setHistoryStatus(report.history_status);
+        setPrHygiene(report.pr_hygiene ?? null);
+        setFindings(report.findings);
+        setSelectedFinding((selected) => selected ? report.findings.find((finding) => finding.id === selected.id) ?? null : null);
+        refreshEngineStatus();
+        setHistoryRevision((revision) => revision + 1);
       } catch (err) {
+        if (generation !== scanGenerationRef.current) return;
+        acceptingBatches = false;
+        setFindings([]);
+        setSelectedFinding(null);
+        setScannedMode(null);
+        setScannedPath("");
         setIsScanning(false);
         setErrorMessage(typeof err === "string" ? err : String(err));
+      } finally {
+        acceptingBatches = false;
+        unlisten?.();
       }
     } else {
       // Browser simulation fallback for 15 fixture findings
       setTimeout(() => {
+        if (generation !== scanGenerationRef.current) return;
         const mockFixtureFindings: FindingDTO[] = [
           {
             id: "ARCH-DEP-001:src/domain/user.ts:5",
@@ -395,11 +397,15 @@ export const App: React.FC = () => {
 
         setFindings(mockFixtureFindings);
         setIsScanning(false);
+        setScanSession({ engine_mode: "mock", usage: null });
         setScanStats({
           files_scanned: 12,
           ast_chunks: 18,
           module_chunks: 12,
           duration_ms: 142,
+          compliance_percent: null,
+          completion: null,
+          coverage: null,
           suppressed_heuristic_findings: 0,
         });
         if (scanMode === "staged_diff") {
@@ -472,13 +478,7 @@ export const App: React.FC = () => {
     (f) => !f.resolved && (f.severity === "CRITICAL" || f.severity === "HIGH")
   ).length;
 
-  const totalFiles = scanStats ? scanStats.files_scanned : 12;
-  const filesWithFindings = new Set(findings.map((f) => f.file)).size;
-  const passedPercent =
-    totalFiles > 0
-      ? Math.max(0, ((totalFiles - filesWithFindings) / totalFiles) * 100)
-      : 100;
-  const analyzedLoc = scanStats ? scanStats.files_scanned * 320 : 12480;
+  const passedPercent = isScanning ? null : scanStats?.compliance_percent ?? null;
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface-canvas text-text-primary">
@@ -492,6 +492,11 @@ export const App: React.FC = () => {
       />
 
       {/* Info Banner */}
+      {isScanning && (
+        <div className="px-4 py-2 text-xs text-text-muted" role="status">
+          Live findings are provisional until the scan completes. Fixes are unavailable during scanning.
+        </div>
+      )}
       {infoBanner && (
         <div className="bg-tertiary/10 border-b border-tertiary/20 px-4 py-2 text-xs text-tertiary flex items-center justify-between select-none">
           <span>{infoBanner}</span>
@@ -505,6 +510,11 @@ export const App: React.FC = () => {
       )}
 
       {/* Error Banner */}
+      {historyError && activeTab !== "trend" && (
+        <div role="alert" className="bg-status-critical/15 border-b border-status-critical/30 px-4 py-2 text-xs text-status-critical">
+          Scan history could not be read: {historyError}
+        </div>
+      )}
       {errorMessage && (
         <div className="bg-status-critical/15 border-b border-status-critical/30 px-4 py-2 text-xs text-status-critical flex items-center justify-between select-none">
           <div className="flex items-center space-x-2">
@@ -517,14 +527,6 @@ export const App: React.FC = () => {
           >
             <X className="w-3.5 h-3.5" />
           </button>
-        </div>
-      )}
-
-      {/* Patch Proposal Progress */}
-      {patchBusy && (
-        <div className="bg-tertiary/10 border-b border-tertiary/20 px-4 py-2 text-xs text-tertiary flex items-center space-x-2 select-none">
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          <span>Preparing remediation proposal…</span>
         </div>
       )}
 
@@ -542,13 +544,20 @@ export const App: React.FC = () => {
 
       {/* Live Metrics Ribbon */}
       <MetricsRibbon
-        analyzedLoc={analyzedLoc}
+        coverage={scanStats?.coverage ?? null}
         underReview={underReviewCount}
         resolved={resolvedCount}
         passedPercent={passedPercent}
         blockedCount={blockedCount}
         isScanning={isScanning}
       />
+      {scanStats && !isScanning && (
+        <div className="px-4 py-2 text-xs text-text-muted border-b border-border-subtle">
+          Completion: {scanStats.completion ?? "Unknown"}. {scanStats.coverage ? (
+            <>Coverage: {scanStats.coverage.discovered} discovered; {scanStats.coverage.supported} supported; {scanStats.coverage.analyzed} analyzed; {scanStats.coverage.unsupported} unsupported; {scanStats.coverage.excluded} excluded (accounting {scanStats.coverage.exclusions_complete === true ? "complete" : scanStats.coverage.exclusions_complete === false ? "incomplete" : "unknown"}); {scanStats.coverage.unreadable} unreadable; {scanStats.coverage.oversized} oversized; {scanStats.coverage.invalid_encoding} invalid encoding; {scanStats.coverage.incomplete} incomplete. Excluded directories are not traversed for counts.</>
+          ) : "Coverage not recorded."}
+        </div>
+      )}
 
       {/* Filter and Category Ribbon */}
       <FiltersBar
@@ -600,7 +609,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Quality Trend Chart (Phase 6) */}
-        {activeTab === "trend" && <TrendChart points={historyPoints} />}
+        {activeTab === "trend" && <TrendChart points={historyPoints} error={historyError} loading={historyLoading} />}
 
         {/* Pull Request Hygiene Scorecard (Phase 8) */}
         {activeTab === "prs" && (
@@ -611,7 +620,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Slide-over Finding Detail & Remediation Drawer */}
-        {selectedFinding && (
+        {selectedFinding && !isScanning && (
           <FindingDrawer
             finding={selectedFinding}
             onClose={() => setSelectedFinding(null)}
@@ -625,6 +634,8 @@ export const App: React.FC = () => {
       <StatusBar
         engineStatus={engineStatus}
         scanStats={scanStats}
+        session={scanSession}
+        historyStatus={historyStatus}
         isScanning={isScanning}
         onOpenApiKey={() => setApiKeyDialogOpen(true)}
       />
@@ -644,17 +655,25 @@ export const App: React.FC = () => {
         preview={diffPreview}
         rootPath={scannedPath}
         finding={diffFinding}
-        onPreviewGenerated={setDiffPreview}
+        fixesAvailable={!isScanning && scannedMode === "full_scan"}
+        onPreviewGenerated={(preview) => {
+          if (scanGeneration === scanGenerationRef.current && previewGeneration === previewGenerationRef.current) setDiffPreview(preview);
+        }}
         onClose={() => {
+          ++previewGenerationRef.current;
           setDiffPreview(null);
           setDiffFinding(null);
         }}
         onApplied={(outcome) => {
+          if (scanGeneration !== scanGenerationRef.current || previewGeneration !== previewGenerationRef.current) return;
+          ++previewGenerationRef.current;
           setInfoBanner(outcome.message);
           setDiffPreview(null);
           setDiffFinding(null);
         }}
-        onError={(message) => setErrorMessage(message)}
+        onError={(message) => {
+          if (scanGeneration === scanGenerationRef.current && previewGeneration === previewGenerationRef.current) setErrorMessage(message);
+        }}
       />
     </div>
   );

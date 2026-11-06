@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 
-use coderadar_domain::{DomainError, Finding, ScanMode, ScanSession, ScanSessionSummary};
+use coderadar_domain::{
+    DomainError, Finding, ScanCoverage, ScanMode, ScanSession, ScanSessionSummary, ScanUsage,
+};
 use coderadar_usecases::ScanHistoryRepository;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -33,9 +35,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scan_sessions (
          high INTEGER NOT NULL,
          medium INTEGER NOT NULL,
          low INTEGER NOT NULL,
-         compliance_percent INTEGER NOT NULL,
+         compliance_percent INTEGER,
          suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0,
          engine_mode TEXT,
+         coverage_json TEXT,
          findings_json TEXT NOT NULL
      )";
 
@@ -75,26 +78,23 @@ pub struct FindingSnapshot {
     pub title: String,
     /// Longer explanation.
     pub description: String,
-    /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
-    /// Snapshots written before the provenance column existed carry no
-    /// `engine` key and deserialize with the `tier0` marker instead of
-    /// failing.
-    #[serde(default = "tier0_engine")]
+    /// Engine that produced the finding, or `unknown` for legacy snapshots.
+    #[serde(default = "unknown_engine")]
     pub engine: String,
-    /// Evaluator confidence in `[0.0, 1.0]`. Legacy snapshots deserialize as
-    /// `1.0`.
-    #[serde(default = "confidence_default")]
-    pub confidence: f32,
+    /// Evaluator confidence, unknown when absent from legacy snapshots.
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    /// Model probability, unknown for legacy snapshots or other evaluators.
+    #[serde(default)]
+    pub model_probability: Option<f32>,
+    /// Heuristic weight, unknown for legacy snapshots or other evaluators.
+    #[serde(default)]
+    pub heuristic_weight: Option<f32>,
 }
 
 /// Deserialization default for the engine marker of legacy snapshots.
-fn tier0_engine() -> String {
-    "tier0".to_string()
-}
-
-/// Deserialization default for the confidence of legacy snapshots.
-fn confidence_default() -> f32 {
-    1.0
+fn unknown_engine() -> String {
+    "unknown".to_string()
 }
 
 impl FindingSnapshot {
@@ -112,7 +112,9 @@ impl FindingSnapshot {
             title: finding.title.clone(),
             description: finding.description.clone(),
             engine: finding.engine.as_str().to_string(),
-            confidence: finding.confidence,
+            confidence: Some(finding.confidence),
+            model_probability: finding.model_probability,
+            heuristic_weight: finding.heuristic_weight,
         }
     }
 }
@@ -131,9 +133,14 @@ struct SessionRecord {
     high: usize,
     medium: usize,
     low: usize,
-    compliance_percent: u8,
+    compliance_percent: Option<u8>,
     suppressed_heuristic_findings: usize,
     engine_mode: Option<String>,
+    coverage_json: Option<String>,
+    usage_json: Option<String>,
+    analyzed_sources_json: Option<String>,
+    consumed_sources_json: Option<String>,
+    completion: Option<String>,
     findings_json: String,
 }
 
@@ -165,8 +172,115 @@ impl SessionRecord {
             compliance_percent: summary.compliance_percent,
             suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             engine_mode: summary.engine_mode.clone(),
+            completion: summary.completion.clone(),
+            coverage_json: summary
+                .coverage
+                .map(|c| serde_json::to_string(&CoverageRecord::from(c)))
+                .transpose()
+                .map_err(|error| {
+                    DomainError::External(format!("cannot serialise coverage: {error}"))
+                })?,
+            usage_json: summary
+                .usage
+                .map(|usage| serde_json::to_string(&UsageRecord::from(usage)))
+                .transpose()
+                .map_err(|error| {
+                    DomainError::External(format!("cannot serialise usage: {error}"))
+                })?,
+            analyzed_sources_json: session
+                .analyzed_sources
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| {
+                    DomainError::External(format!("cannot serialise analyzed sources: {error}"))
+                })?,
+            consumed_sources_json: session
+                .consumed_sources
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| {
+                    DomainError::External(format!("cannot serialise consumed sources: {error}"))
+                })?,
             findings_json,
         })
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UsageRecord {
+    primary_batches: u64,
+    fallback_batches: u64,
+    fallback_failures: u64,
+}
+
+impl From<ScanUsage> for UsageRecord {
+    fn from(value: ScanUsage) -> Self {
+        Self {
+            primary_batches: value.primary_batches,
+            fallback_batches: value.fallback_batches,
+            fallback_failures: value.fallback_failures,
+        }
+    }
+}
+
+impl From<UsageRecord> for ScanUsage {
+    fn from(value: UsageRecord) -> Self {
+        Self {
+            primary_batches: value.primary_batches,
+            fallback_batches: value.fallback_batches,
+            fallback_failures: value.fallback_failures,
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CoverageRecord {
+    discovered: usize,
+    supported: usize,
+    analyzed: usize,
+    unsupported: usize,
+    excluded: usize,
+    #[serde(default)]
+    exclusions_complete: Option<bool>,
+    unreadable: usize,
+    oversized: usize,
+    invalid_encoding: usize,
+    incomplete: usize,
+}
+
+impl From<ScanCoverage> for CoverageRecord {
+    fn from(c: ScanCoverage) -> Self {
+        Self {
+            discovered: c.discovered,
+            supported: c.supported,
+            analyzed: c.analyzed,
+            unsupported: c.unsupported,
+            excluded: c.excluded,
+            exclusions_complete: c.exclusions_complete,
+            unreadable: c.unreadable,
+            oversized: c.oversized,
+            invalid_encoding: c.invalid_encoding,
+            incomplete: c.incomplete,
+        }
+    }
+}
+
+impl From<CoverageRecord> for ScanCoverage {
+    fn from(c: CoverageRecord) -> Self {
+        Self {
+            discovered: c.discovered,
+            supported: c.supported,
+            analyzed: c.analyzed,
+            unsupported: c.unsupported,
+            excluded: c.excluded,
+            exclusions_complete: c.exclusions_complete,
+            unreadable: c.unreadable,
+            oversized: c.oversized,
+            invalid_encoding: c.invalid_encoding,
+            incomplete: c.incomplete,
+        }
     }
 }
 
@@ -201,6 +315,154 @@ fn parse_mode(value: &str) -> ScanMode {
         "staged_diff" => ScanMode::StagedDiff,
         _ => ScanMode::FullScan,
     }
+}
+
+/// Upgrade a version-zero database atomically, retaining its table definition
+/// and its explicit indexes and triggers. Unexpected definitions fail closed.
+fn migrate(connection: &mut Connection) -> Result<(), DomainError> {
+    // Dropping the old table must not cascade into tables that reference it.
+    let foreign_keys: bool = connection
+        .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+        .map_err(|e| sqlite_error("cannot inspect history foreign keys", e))?;
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .map_err(|e| sqlite_error("cannot disable history foreign keys", e))?;
+    let result = migrate_transaction(connection);
+    connection
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(|e| sqlite_error("cannot restore history foreign keys", e))?;
+    result
+}
+
+fn migrate_transaction(connection: &mut Connection) -> Result<(), DomainError> {
+    let tx = connection
+        .transaction()
+        .map_err(|e| sqlite_error("cannot start history migration", e))?;
+    let version: i64 = tx
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(|e| sqlite_error("cannot read history version", e))?;
+    if !(0..=4).contains(&version) {
+        return Err(DomainError::External(format!(
+            "unsupported history schema version {version}"
+        )));
+    }
+    if version == 0 {
+        let schema: Option<String> = tx
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='scan_sessions'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| sqlite_error("cannot inspect history schema", e))?;
+        if let Some(schema) = schema {
+            let mut statement = tx
+                .prepare("PRAGMA table_info(scan_sessions)")
+                .map_err(|e| sqlite_error("cannot inspect history columns", e))?;
+            let columns: Vec<(String, bool)> = statement
+                .query_map([], |r| Ok((r.get(1)?, r.get::<_, i64>(3)? != 0)))
+                .map_err(|e| sqlite_error("cannot inspect history columns", e))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| sqlite_error("cannot inspect history columns", e))?;
+            drop(statement);
+            let Some((_, score_not_null)) = columns
+                .iter()
+                .find(|(name, _)| name == "compliance_percent")
+            else {
+                return Err(DomainError::External(
+                    "history schema lacks compliance_percent".into(),
+                ));
+            };
+            let mut new_schema = schema;
+            if *score_not_null {
+                let upper = new_schema.to_ascii_uppercase();
+                let start = upper.find("COMPLIANCE_PERCENT").ok_or_else(|| {
+                    DomainError::External("unrecognised history score declaration".into())
+                })?;
+                let end = upper[start..].find(',').map_or(upper.len(), |n| start + n);
+                let clause = &upper[start..end];
+                let offset = clause.find("NOT NULL").ok_or_else(|| {
+                    DomainError::External("unrecognised history score constraint".into())
+                })?;
+                new_schema.replace_range(start + offset..start + offset + "NOT NULL".len(), "");
+            }
+            let mut statement = tx.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='scan_sessions' AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type, name")
+                .map_err(|e| sqlite_error("cannot inspect history indexes", e))?;
+            let objects: Vec<String> = statement
+                .query_map([], |r| r.get(0))
+                .map_err(|e| sqlite_error("cannot inspect history indexes", e))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| sqlite_error("cannot inspect history indexes", e))?;
+            drop(statement);
+            let open = new_schema.find('(').ok_or_else(|| {
+                DomainError::External("unrecognised history table definition".into())
+            })?;
+            let staging_schema = format!(
+                "CREATE TABLE scan_sessions_migration {}",
+                &new_schema[open..]
+            );
+            tx.execute_batch(&staging_schema)
+                .map_err(|e| sqlite_error("cannot rebuild history table", e))?;
+            let names = columns
+                .iter()
+                .map(|(name, _)| format!("\"{}\"", name.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            tx.execute_batch(&format!("INSERT INTO scan_sessions_migration ({names}) SELECT {names} FROM scan_sessions; DROP TABLE scan_sessions; ALTER TABLE scan_sessions_migration RENAME TO scan_sessions;"))
+                .map_err(|e| sqlite_error("cannot copy history rows", e))?;
+            for object in objects {
+                tx.execute_batch(&object)
+                    .map_err(|e| sqlite_error("cannot restore history index or trigger", e))?;
+            }
+            for (name, declaration) in [
+                (
+                    "suppressed_heuristic_findings",
+                    "INTEGER NOT NULL DEFAULT 0",
+                ),
+                ("engine_mode", "TEXT"),
+                ("coverage_json", "TEXT"),
+            ] {
+                if !columns.iter().any(|(column, _)| column == name) {
+                    tx.execute_batch(&format!(
+                        "ALTER TABLE scan_sessions ADD COLUMN {name} {declaration}"
+                    ))
+                    .map_err(|e| sqlite_error("cannot add history column", e))?;
+                }
+            }
+            let nullable: bool = tx.query_row("SELECT [notnull] = 0 FROM pragma_table_info('scan_sessions') WHERE name='compliance_percent'", [], |r| r.get(0))
+                .map_err(|e| sqlite_error("cannot verify history score", e))?;
+            if !nullable {
+                return Err(DomainError::External(
+                    "history score is not nullable".into(),
+                ));
+            }
+        } else {
+            tx.execute_batch(SCHEMA)
+                .map_err(|e| sqlite_error("cannot create history schema", e))?;
+        }
+        tx.pragma_update(None, "user_version", 1)
+            .map_err(|e| sqlite_error("cannot update history version", e))?;
+    }
+    if version < 2 {
+        tx.execute_batch("ALTER TABLE scan_sessions ADD COLUMN usage_json TEXT")
+            .map_err(|e| sqlite_error("cannot add history usage", e))?;
+        tx.pragma_update(None, "user_version", 2)
+            .map_err(|e| sqlite_error("cannot update history version", e))?;
+    }
+    if version < 3 {
+        tx.execute_batch("ALTER TABLE scan_sessions ADD COLUMN analyzed_sources_json TEXT; ALTER TABLE scan_sessions ADD COLUMN consumed_sources_json TEXT")
+            .map_err(|e| sqlite_error("cannot add history source provenance", e))?;
+        tx.pragma_update(None, "user_version", 3)
+            .map_err(|e| sqlite_error("cannot update history version", e))?;
+    }
+    if version < 4 {
+        tx.execute_batch("ALTER TABLE scan_sessions ADD COLUMN completion TEXT")
+            .map_err(|e| sqlite_error("cannot add history completion", e))?;
+        tx.pragma_update(None, "user_version", 4)
+            .map_err(|e| sqlite_error("cannot update history version", e))?;
+    }
+    tx.commit()
+        .map_err(|e| sqlite_error("cannot commit history migration", e))
 }
 
 /// SQLite-backed scan history repository.
@@ -251,26 +513,8 @@ impl SqliteScanHistoryRepository {
     }
 
     /// Build a repository around an open connection and apply the schema.
-    fn from_connection(connection: Connection, path: PathBuf) -> Result<Self, DomainError> {
-        connection
-            .execute_batch(SCHEMA)
-            .map_err(|error| sqlite_error("cannot create the history schema", error))?;
-        // Migrate databases created before the heuristic precision floor: a
-        // freshly created schema already carries both columns, so the ALTER
-        // statements are expected to fail with "duplicate column name" there.
-        for statement in [
-            "ALTER TABLE scan_sessions
-             ADD COLUMN suppressed_heuristic_findings INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE scan_sessions
-             ADD COLUMN engine_mode TEXT",
-        ] {
-            if let Err(error) = connection.execute(statement, params![]) {
-                let message = error.to_string();
-                if !message.contains("duplicate column name") {
-                    return Err(sqlite_error("cannot migrate the history schema", error));
-                }
-            }
-        }
+    fn from_connection(mut connection: Connection, path: PathBuf) -> Result<Self, DomainError> {
+        migrate(&mut connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path,
@@ -335,8 +579,8 @@ fn write_record(
                   id, root_dir, mode, started_at_unix_ms, finished_at_unix_ms,
                   files_scanned, total_findings, critical, high, medium, low,
                   compliance_percent, suppressed_heuristic_findings, engine_mode,
-                  findings_json
-              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                  findings_json, coverage_json, usage_json, analyzed_sources_json, consumed_sources_json, completion
+              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 record.id,
                 record.root_dir,
@@ -349,10 +593,15 @@ fn write_record(
                 record.high as i64,
                 record.medium as i64,
                 record.low as i64,
-                record.compliance_percent as i64,
+                record.compliance_percent,
                 record.suppressed_heuristic_findings as i64,
                 record.engine_mode,
                 record.findings_json,
+                record.coverage_json,
+                record.usage_json,
+                record.analyzed_sources_json,
+                record.consumed_sources_json,
+                record.completion,
             ],
         )
         .map_err(|error| sqlite_error("cannot write the scan session", error))?;
@@ -377,7 +626,8 @@ fn read_summaries(
         .prepare(
             "SELECT id, root_dir, mode, finished_at_unix_ms, files_scanned,
                     total_findings, critical, high, medium, low, compliance_percent,
-                    suppressed_heuristic_findings, engine_mode
+                    suppressed_heuristic_findings, engine_mode, coverage_json, usage_json,
+                    analyzed_sources_json, consumed_sources_json, completion
              FROM scan_sessions
              WHERE ?2 IS NULL OR root_dir = ?2
              ORDER BY finished_at_unix_ms DESC, id DESC
@@ -397,9 +647,40 @@ fn read_summaries(
                 high: row.get::<_, i64>(7)? as usize,
                 medium: row.get::<_, i64>(8)? as usize,
                 low: row.get::<_, i64>(9)? as usize,
-                compliance_percent: row.get::<_, i64>(10)? as u8,
+                compliance_percent: row.get(10)?,
                 suppressed_heuristic_findings: row.get::<_, i64>(11)? as usize,
                 engine_mode: row.get(12)?,
+                coverage: row
+                    .get::<_, Option<String>>(13)?
+                    .map(|json| {
+                        serde_json::from_str::<CoverageRecord>(&json)
+                            .map(ScanCoverage::from)
+                            .map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    13,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })
+                    })
+                    .transpose()?,
+                usage: row
+                    .get::<_, Option<String>>(14)?
+                    .map(|json| {
+                        serde_json::from_str::<UsageRecord>(&json)
+                            .map(ScanUsage::from)
+                            .map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    14,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })
+                    })
+                    .transpose()?,
+                analyzed_sources: parse_sources(row, 15)?,
+                consumed_sources: parse_sources(row, 16)?,
+                completion: row.get(17)?,
             })
         })
         .map_err(|error| sqlite_error("cannot read the scan history", error))?;
@@ -408,6 +689,23 @@ fn read_summaries(
         summaries.push(row.map_err(|error| sqlite_error("cannot read the scan history", error))?);
     }
     Ok(summaries)
+}
+
+fn parse_sources(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<std::collections::BTreeMap<String, String>>> {
+    row.get::<_, Option<String>>(index)?
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
 }
 
 /// Read and deserialise the findings snapshot of one session.
@@ -499,7 +797,10 @@ mod tests {
         assert_eq!(history[0].id, "b");
         assert_eq!(history[1].id, "a");
         assert_eq!(history[0].files_scanned, 2);
-        assert_eq!(history[0].compliance_percent, 100);
+        assert_eq!(
+            history[0].compliance_percent,
+            second.summary().compliance_percent
+        );
         assert_eq!(history[0].suppressed_heuristic_findings, 3);
         assert_eq!(history[0].engine_mode.as_deref(), Some("jev"));
         assert_eq!(history[1].suppressed_heuristic_findings, 0);

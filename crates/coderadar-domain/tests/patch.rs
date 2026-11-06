@@ -140,17 +140,17 @@ fn the_compliance_score_counts_the_clean_files() {
     session.push(Finding::new("SEC-XSS-004", "a.ts", 9, 9).with_severity(Severity::High));
 
     // Only one of the four files carries a finding: 75% of the files pass.
-    assert_eq!(session.compliance_percent(), 75);
+    assert_eq!(session.compliance_percent(), Some(75));
 
     let summary = session.summary();
     assert_eq!(summary.files_scanned, 4);
-    assert_eq!(summary.compliance_percent, 75);
+    assert_eq!(summary.compliance_percent, Some(75));
     assert_eq!(summary.total_findings, 2);
 }
 
 #[test]
-fn a_scan_without_files_is_compliant() {
+fn a_scan_without_files_has_no_compliance_score() {
     let session = ScanSession::new("scan-1", "/repo", ScanMode::FullScan, 1_000);
-    assert_eq!(session.compliance_percent(), 100);
-    assert_eq!(session.summary().compliance_percent, 100);
+    assert_eq!(session.compliance_percent(), None);
+    assert_eq!(session.summary().compliance_percent, None);
 }

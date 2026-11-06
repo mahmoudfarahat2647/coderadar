@@ -37,6 +37,10 @@ pub struct MarkdownFinding {
     pub description: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
+    /// Model probability, when available.
+    pub model_probability: Option<f32>,
+    /// Heuristic weight, when available.
+    pub heuristic_weight: Option<f32>,
     /// Normalized risk score in `[0.0, 1.0]`.
     pub risk_score: f32,
 }
@@ -58,6 +62,10 @@ pub struct MarkdownReportInput {
     pub root_dir: String,
     /// Scan mode token (`full_scan`).
     pub mode: String,
+    /// Engine mode as recorded by the scan.
+    pub engine_mode: String,
+    /// Cumulative primary, fallback, and failed batch counts, if recorded.
+    pub usage: Option<(u64, u64, u64)>,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds.
@@ -71,7 +79,15 @@ pub struct MarkdownReportInput {
     /// Wall-clock duration of the scan.
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
-    pub compliance_percent: u8,
+    pub compliance_percent: Option<u8>,
+    /// Scan completion state, when recorded.
+    pub completion: Option<String>,
+    /// Analyzed source paths and SHA-256 fingerprints, if recorded.
+    pub analyzed_sources: Option<Vec<(String, String)>>,
+    /// Consumed source paths and fingerprints, including invalidated sources, if recorded.
+    pub consumed_sources: Option<Vec<(String, String)>>,
+    /// Named file-level coverage counts, or `None` when not recorded.
+    pub coverage: Option<Vec<(&'static str, usize)>>,
     /// Number of heuristic findings the precision floor dropped and which are
     /// therefore only counted (`CR-SPEC-09 §5`).
     pub suppressed_heuristic_findings: usize,
@@ -209,10 +225,37 @@ fn render_executive_summary(
     out.push_str(&format!("| AST chunks | {} |\n", input.ast_chunks));
     out.push_str(&format!("| Module chunks | {} |\n", input.module_chunks));
     out.push_str(&format!("| Duration | {} ms |\n", input.duration_ms));
+    out.push_str(&format!(
+        "| Engine mode | {} |\n",
+        escape_text(&input.engine_mode)
+    ));
+    for (label, count) in [
+        ("Primary batches", input.usage.map(|usage| usage.0)),
+        ("Fallback batches", input.usage.map(|usage| usage.1)),
+        ("Failed batches", input.usage.map(|usage| usage.2)),
+    ] {
+        out.push_str(&format!(
+            "| {label} | {} |\n",
+            count
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        ));
+    }
     out.push_str(&format!("| Findings | {} |\n", findings.len()));
     out.push_str(&format!(
-        "| Compliance | {} % |\n",
-        input.compliance_percent
+        "| Completion | {} |\n",
+        input
+            .completion
+            .as_deref()
+            .map(escape_text)
+            .unwrap_or_else(|| "Unknown".to_string())
+    ));
+    out.push_str(&format!(
+        "| Compliance | {} |\n",
+        input
+            .compliance_percent
+            .map(|score| format!("{score} %"))
+            .unwrap_or_else(|| "Unavailable".to_string())
     ));
     out.push_str(&format!(
         "| Average risk score | {} |\n",
@@ -223,6 +266,50 @@ fn render_executive_summary(
         input.suppressed_heuristic_findings
     ));
     out.push('\n');
+    out.push_str("Compliance is the share of analyzed files without reported findings, not a security certification.\n\n");
+    if let Some(coverage) = &input.coverage {
+        out.push_str("### File coverage\n\n| Measure | Files |\n|---|---:|\n");
+        for (label, count) in coverage {
+            out.push_str(&format!("| {label} | {count} |\n"));
+        }
+        out.push_str("\nExclusion accounting may be incomplete or unknown as indicated above; excluded directories are not traversed just to count their contents.\n\n");
+        if coverage
+            .iter()
+            .any(|(label, count)| *label == "Incomplete" && *count > 0)
+        {
+            out.push_str("Some supported files had incomplete analysis; findings and scores do not cover those files.\n\n");
+        }
+    } else {
+        out.push_str("Coverage not recorded.\n\n");
+    }
+
+    if let Some(sources) = &input.analyzed_sources {
+        out.push_str("### Analyzed source identities\n\n| Source | SHA-256 |\n|---|---|\n");
+        for (path, hash) in sources {
+            out.push_str(&format!(
+                "| {} | {} |\n",
+                escape_text(path),
+                escape_text(hash)
+            ));
+        }
+        out.push('\n');
+    } else {
+        out.push_str("Source identities not recorded.\n\n");
+    }
+
+    if let Some(sources) = &input.consumed_sources {
+        out.push_str("### Consumed source identities\n\n| Source | SHA-256 |\n|---|---|\n");
+        for (path, hash) in sources {
+            out.push_str(&format!(
+                "| {} | {} |\n",
+                escape_text(path),
+                escape_text(hash)
+            ));
+        }
+        out.push('\n');
+    } else {
+        out.push_str("Consumed source identities not recorded.\n\n");
+    }
 
     out.push_str("### Severity distribution\n\n");
     out.push_str("| Severity | Count | Share |\n|---|---:|---:|\n");
@@ -285,7 +372,7 @@ fn render_radar_metrics(out: &mut String, findings: &[MarkdownFinding]) {
 fn render_findings(out: &mut String, findings: &[MarkdownFinding]) {
     out.push_str("## Findings by category\n\n");
     if findings.is_empty() {
-        out.push_str("No findings: the scan passed cleanly.\n\n");
+        out.push_str("No findings were reported. Consult coverage for analysis limitations.\n\n");
         return;
     }
 
@@ -338,6 +425,18 @@ fn render_finding(out: &mut String, index: usize, finding: &MarkdownFinding) {
         format_score(finding.risk_score),
         format_score(finding.confidence)
     ));
+    if let Some(probability) = finding.model_probability {
+        out.push_str(&format!(
+            "- **Model probability:** {}\n",
+            format_score(probability)
+        ));
+    }
+    if let Some(weight) = finding.heuristic_weight {
+        out.push_str(&format!(
+            "- **Heuristic weight:** {}\n",
+            format_score(weight)
+        ));
+    }
     out.push('\n');
 
     let description = escape_text(&finding.description);
@@ -449,6 +548,8 @@ mod tests {
             title: "Hardcoded Secrets & API Keys".to_string(),
             description: "a credential is embedded in the source".to_string(),
             confidence: 0.9,
+            model_probability: None,
+            heuristic_weight: None,
             risk_score: 1.0,
         }
     }
@@ -462,13 +563,19 @@ mod tests {
             session_id: "scan-1".to_string(),
             root_dir: "/tmp/root".to_string(),
             mode: "full_scan".to_string(),
+            engine_mode: "unknown".to_string(),
+            usage: None,
             started_at_unix_ms: 1_000,
             finished_at_unix_ms: 1_500,
             files_scanned: 12,
             ast_chunks: 30,
             module_chunks: 12,
             duration_ms: 500,
-            compliance_percent: 75,
+            compliance_percent: Some(75),
+            completion: None,
+            coverage: None,
+            analyzed_sources: None,
+            consumed_sources: None,
             suppressed_heuristic_findings: 3,
             findings,
         }
@@ -504,9 +611,7 @@ mod tests {
     #[test]
     fn a_clean_scan_says_so() {
         let report = render_markdown_report(&input(Vec::new()));
-        assert!(report
-            .markdown
-            .contains("No findings: the scan passed cleanly."));
+        assert!(report.markdown.contains("No findings were reported."));
         assert!(report.markdown.contains("| Findings | 0 |"));
         assert_eq!(report.finding_count, 0);
     }

@@ -112,13 +112,13 @@ fn two_sessions_are_read_back_newest_first() {
     assert_eq!(history[0].high, 0);
     assert_eq!(history[0].medium, 0);
     // Two of the ten analysed files carry a finding.
-    assert_eq!(history[0].compliance_percent, 80);
+    assert_eq!(history[0].compliance_percent, Some(80));
 
     assert_eq!(history[1].id, "older");
     assert_eq!(history[1].files_scanned, 4);
     assert_eq!(history[1].total_findings, 1);
     assert_eq!(history[1].high, 1);
-    assert_eq!(history[1].compliance_percent, 75);
+    assert_eq!(history[1].compliance_percent, Some(75));
 }
 
 #[test]
@@ -235,6 +235,28 @@ fn a_failing_history_does_not_fail_the_scan() {
 }
 
 #[test]
+fn desktop_scan_reports_history_write_outcome_without_failing() {
+    let scan = |history: &dyn ScanHistoryRepository| {
+        coderadar_infrastructure::scan_project_streaming_with_engine_history_status(
+            Path::new(FIXTURE_REPOSITORY),
+            &coderadar_infrastructure::SemanticEngine::mock(),
+            Duration::from_millis(1),
+            ScanMode::FullScan,
+            |_| {},
+            history,
+        )
+        .expect("scan succeeds")
+    };
+    let (report, saved) = scan(&FailingHistory);
+    assert!(report.scan.files_scanned > 0);
+    assert!(!saved);
+    let repository = SqliteScanHistoryRepository::open_in_memory().unwrap();
+    let (_, saved) = scan(&repository);
+    assert!(saved);
+    assert_eq!(block_on(repository.get_history(10, None)).unwrap().len(), 1);
+}
+
+#[test]
 fn a_completed_scan_is_persisted_with_its_compliance_score() {
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("history.sqlite3");
@@ -257,10 +279,10 @@ fn a_completed_scan_is_persisted_with_its_compliance_score() {
     assert_eq!(session.id, report.session.id, "the persisted session");
     assert!(session.files_scanned > 0, "the files were counted");
     assert_eq!(session.total_findings, report.findings.len());
-    assert!(
-        session.compliance_percent <= 100,
-        "the compliance score stays in 0..=100"
-    );
+    let score = session
+        .compliance_percent
+        .expect("analyzed files have a score");
+    assert!(score <= 100, "the compliance score stays in 0..=100");
     assert_eq!(session.root_dir, canonical_fixture_root());
 }
 

@@ -1,4 +1,6 @@
-use coderadar_domain::{Finding, LineEdit, PatchOutcome, PatchProposal, ScanSessionSummary};
+use coderadar_domain::{
+    Finding, LineEdit, PatchOutcome, PatchProposal, ScanCoverage, ScanSessionSummary, ScanUsage,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::radar::PolarCoordinate;
@@ -31,8 +33,14 @@ pub struct FindingDTO {
     pub description: String,
     /// Engine that produced the finding (`tier0` | `tier1` | `mock`).
     pub engine: String,
-    /// Evaluator confidence in `[0.0, 1.0]`.
-    pub confidence: f32,
+    /// Evaluator confidence in `[0.0, 1.0]`, when recorded.
+    pub confidence: Option<f32>,
+    /// Model probability, when recorded.
+    #[serde(default)]
+    pub model_probability: Option<f32>,
+    /// Uncalibrated heuristic weight, when recorded.
+    #[serde(default)]
+    pub heuristic_weight: Option<f32>,
     /// Polar radius for the radar.
     pub radar_r: f32,
     /// Polar angle (degrees) for the radar.
@@ -54,7 +62,9 @@ impl FindingDTO {
             title: finding.title.clone(),
             description: finding.description.clone(),
             engine: finding.engine.as_str().to_string(),
-            confidence: finding.confidence,
+            confidence: Some(finding.confidence),
+            model_probability: finding.model_probability,
+            heuristic_weight: finding.heuristic_weight,
             radar_r: coordinate.radius,
             radar_theta: coordinate.angle_deg,
         }
@@ -269,8 +279,79 @@ pub struct HistoryPointDTO {
     /// Engine label recorded for the session (`mock` | `jev` |
     /// `mock_fallback`), `None` when not declared.
     pub engine_mode: Option<String>,
+    /// Semantic batch usage, absent when not recorded.
+    #[serde(default)]
+    pub usage: Option<ScanUsageDTO>,
     /// Compliance score of the scan, 0-100.
-    pub compliance_percent: u8,
+    pub compliance_percent: Option<u8>,
+    /// File-level coverage; absent for legacy rows.
+    pub coverage: Option<CoverageDTO>,
+    /// Completion state, absent when not recorded.
+    pub completion: Option<String>,
+}
+
+/// Scan-scoped semantic batch outcomes at the presentation boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanUsageDTO {
+    /// Batches answered by the primary evaluator.
+    pub primary_batches: u64,
+    /// Batches answered by the fallback evaluator.
+    pub fallback_batches: u64,
+    /// Batches for which both evaluators failed.
+    pub fallback_failures: u64,
+}
+
+impl From<ScanUsage> for ScanUsageDTO {
+    fn from(value: ScanUsage) -> Self {
+        Self {
+            primary_batches: value.primary_batches,
+            fallback_batches: value.fallback_batches,
+            fallback_failures: value.fallback_failures,
+        }
+    }
+}
+
+/// File-level coverage at the presentation boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverageDTO {
+    /// Files discovered within the selected scope.
+    pub discovered: usize,
+    /// Files eligible for analysis.
+    pub supported: usize,
+    /// Files whose analysis completed.
+    pub analyzed: usize,
+    /// Unsupported files.
+    pub unsupported: usize,
+    /// Exclusions observed under the declared policy.
+    pub excluded: usize,
+    /// Whether policy exclusion accounting is complete, or unknown.
+    #[serde(default)]
+    pub exclusions_complete: Option<bool>,
+    /// Files that could not be read.
+    pub unreadable: usize,
+    /// Files skipped for size.
+    pub oversized: usize,
+    /// Files skipped for invalid encoding.
+    pub invalid_encoding: usize,
+    /// Files with incomplete analysis.
+    pub incomplete: usize,
+}
+
+impl From<ScanCoverage> for CoverageDTO {
+    fn from(value: ScanCoverage) -> Self {
+        Self {
+            discovered: value.discovered,
+            supported: value.supported,
+            analyzed: value.analyzed,
+            unsupported: value.unsupported,
+            excluded: value.excluded,
+            exclusions_complete: value.exclusions_complete,
+            unreadable: value.unreadable,
+            oversized: value.oversized,
+            invalid_encoding: value.invalid_encoding,
+            incomplete: value.incomplete,
+        }
+    }
 }
 
 impl HistoryPointDTO {
@@ -289,7 +370,10 @@ impl HistoryPointDTO {
             low: summary.low,
             suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             engine_mode: summary.engine_mode.clone(),
+            usage: summary.usage.map(ScanUsageDTO::from),
             compliance_percent: summary.compliance_percent,
+            coverage: summary.coverage.map(CoverageDTO::from),
+            completion: summary.completion.clone(),
         }
     }
 }
