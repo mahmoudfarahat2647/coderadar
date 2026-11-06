@@ -17,6 +17,7 @@ fn main() {
             commands::start_scan,
             commands::get_rules,
             commands::get_engine_status,
+            commands::check_provider_diagnostic,
             commands::store_api_key,
             commands::clear_api_key,
             commands::get_default_scan_path,

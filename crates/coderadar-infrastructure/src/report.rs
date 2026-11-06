@@ -6,8 +6,10 @@
 //! tests, scripts and (from Phase 3 on) the Tauri command layer.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 
-use coderadar_domain::{Finding, PullRequestHygiene, Severity};
+use coderadar_adapters::RadarPresenter;
+use coderadar_domain::{Finding, PullRequestHygiene, ScanCoverage, ScanUsage, Severity};
 
 use crate::layer_map::LayerMapSource;
 use crate::pipeline::ScanOutcome;
@@ -34,9 +36,59 @@ pub struct ScanStatsReport {
     /// Wall-clock duration of the scan.
     pub duration_ms: u64,
     /// Compliance score of the scan, 0-100.
-    pub compliance_percent: u8,
+    pub compliance_percent: Option<u8>,
+    /// File-level coverage, when recorded.
+    pub coverage: Option<CoverageReport>,
+    /// Scan completion state, when recorded.
+    pub completion: Option<&'static str>,
+    /// Fingerprints of analyzed sources, or unknown when not recorded.
+    pub analyzed_sources: Option<BTreeMap<String, String>>,
+    /// Fingerprints of consumed sources, including invalidated sources, if recorded.
+    pub consumed_sources: Option<BTreeMap<String, String>>,
     /// Number of heuristic findings dropped by the precision floor.
     pub suppressed_heuristic_findings: usize,
+}
+
+/// File-level scan coverage.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoverageReport {
+    /// Files discovered in scope.
+    pub discovered: usize,
+    /// Eligible files.
+    pub supported: usize,
+    /// Fully analyzed files.
+    pub analyzed: usize,
+    /// Unsupported files.
+    pub unsupported: usize,
+    /// Observed policy exclusions.
+    pub excluded: usize,
+    /// Whether policy exclusion accounting is complete, or unknown.
+    pub exclusions_complete: Option<bool>,
+    /// Files that could not be read.
+    pub unreadable: usize,
+    /// Files skipped for size.
+    pub oversized: usize,
+    /// Files with invalid encoding.
+    pub invalid_encoding: usize,
+    /// Files with incomplete analysis.
+    pub incomplete: usize,
+}
+
+impl From<ScanCoverage> for CoverageReport {
+    fn from(value: ScanCoverage) -> Self {
+        Self {
+            discovered: value.discovered,
+            supported: value.supported,
+            analyzed: value.analyzed,
+            unsupported: value.unsupported,
+            excluded: value.excluded,
+            exclusions_complete: value.exclusions_complete,
+            unreadable: value.unreadable,
+            oversized: value.oversized,
+            invalid_encoding: value.invalid_encoding,
+            incomplete: value.incomplete,
+        }
+    }
 }
 
 /// Findings counted by severity.
@@ -65,12 +117,36 @@ pub struct SessionReport {
     pub mode: String,
     /// Engine label of the composition root (`mock` | `jev` | `mock_fallback`).
     pub engine_mode: String,
+    /// Cumulative semantic batch outcomes, unknown when not collected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageReport>,
     /// Start time as Unix milliseconds.
     pub started_at_unix_ms: u64,
     /// Finish time as Unix milliseconds.
     pub finished_at_unix_ms: u64,
     /// Severity totals.
     pub totals: SeverityTotals,
+}
+
+/// Vendor-neutral semantic batch outcomes for one scan.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageReport {
+    /// Batches answered by the primary evaluator.
+    pub primary_batches: u64,
+    /// Batches answered by the fallback evaluator.
+    pub fallback_batches: u64,
+    /// Batches for which both evaluators failed.
+    pub fallback_failures: u64,
+}
+
+impl From<ScanUsage> for UsageReport {
+    fn from(value: ScanUsage) -> Self {
+        Self {
+            primary_batches: value.primary_batches,
+            fallback_batches: value.fallback_batches,
+            fallback_failures: value.fallback_failures,
+        }
+    }
 }
 
 /// One serialized finding.
@@ -100,8 +176,16 @@ pub struct FindingReport {
     pub engine: String,
     /// Evaluator confidence in `[0.0, 1.0]`.
     pub confidence: f32,
+    /// Model probability, when supplied by a model evaluator.
+    pub model_probability: Option<f32>,
+    /// Heuristic weight, when supplied by a heuristic evaluator.
+    pub heuristic_weight: Option<f32>,
     /// Normalized risk score in `[0.0, 1.0]`.
     pub risk_score: f32,
+    /// Radar radius used by the desktop presentation.
+    pub radar_r: f32,
+    /// Radar angle in degrees used by the desktop presentation.
+    pub radar_theta: f32,
 }
 
 /// Pull Request hygiene scorecard (present for `staged_diff` scans).
@@ -134,6 +218,8 @@ pub struct PrHygieneReport {
 /// The complete JSON document printed by `coderadar scan`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScanReport {
+    /// Version of the report's JSON contract.
+    pub schema_version: u8,
     /// Tool identity.
     pub tool: ToolInfo,
     /// Ruleset version the scan ran with.
@@ -166,6 +252,7 @@ impl ScanReport {
             .unwrap_or(session.started_at_unix_ms);
 
         Self {
+            schema_version: 2,
             tool: ToolInfo {
                 name: "coderadar",
                 version: env!("CARGO_PKG_VERSION"),
@@ -178,6 +265,22 @@ impl ScanReport {
                 module_chunks: outcome.module_chunks,
                 duration_ms,
                 compliance_percent: summary.compliance_percent,
+                coverage: summary.coverage.map(CoverageReport::from),
+                completion: match summary.completion.as_deref() {
+                    Some("complete") => Some("complete"),
+                    Some("partial") => Some("partial"),
+                    Some("failed") => Some("failed"),
+                    Some("cancelled") => Some("cancelled"),
+                    _ if summary
+                        .coverage
+                        .is_some_and(|coverage| coverage.incomplete > 0) =>
+                    {
+                        Some("partial")
+                    }
+                    _ => None,
+                },
+                analyzed_sources: session.analyzed_sources.clone(),
+                consumed_sources: session.consumed_sources.clone(),
                 suppressed_heuristic_findings: summary.suppressed_heuristic_findings,
             },
             session: SessionReport {
@@ -188,6 +291,7 @@ impl ScanReport {
                     .engine_mode
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
+                usage: session.usage.map(UsageReport::from),
                 started_at_unix_ms: session.started_at_unix_ms,
                 finished_at_unix_ms,
                 totals: SeverityTotals {
@@ -223,6 +327,7 @@ fn pr_hygiene_report(hygiene: &PullRequestHygiene) -> PrHygieneReport {
 
 /// Map one domain [`Finding`] into its boundary DTO.
 fn finding_report(finding: &Finding) -> FindingReport {
+    let coordinate = RadarPresenter::project_to_polar(finding);
     FindingReport {
         id: finding.id.clone(),
         file: finding.file_path.clone(),
@@ -236,7 +341,11 @@ fn finding_report(finding: &Finding) -> FindingReport {
         description: finding.description.clone(),
         engine: finding.engine.as_str().to_string(),
         confidence: finding.confidence,
+        model_probability: finding.model_probability,
+        heuristic_weight: finding.heuristic_weight,
         risk_score: finding.risk_score.value(),
+        radar_r: coordinate.radius,
+        radar_theta: coordinate.angle_deg,
     }
 }
 

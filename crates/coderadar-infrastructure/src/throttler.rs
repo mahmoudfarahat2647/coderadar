@@ -91,7 +91,12 @@ impl FindingThrottler {
                     interval - elapsed
                 };
 
-                match rx.recv_timeout(timeout) {
+                let received = if buffer.is_empty() {
+                    rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+                } else {
+                    rx.recv_timeout(timeout)
+                };
+                match received {
                     Ok(batch) => {
                         for finding in batch {
                             let coord = RadarPresenter::project_to_polar(&finding);

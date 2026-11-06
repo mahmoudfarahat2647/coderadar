@@ -9,16 +9,17 @@ use coderadar_adapters::{
 };
 use coderadar_domain::ScanMode;
 use coderadar_infrastructure::{
-    block_on, is_semantic_rule, mask_api_key, resolve_gemini_key,
-    scan_project_streaming_with_history_mode, write_markdown_report, CredentialStore,
-    EngineStatusSnapshot, FindingBatch, GeminiFixProvider, JevConfig, KeyringCredentialStore,
-    OllamaFixProvider, RulesStore, SafePatchApplier, ScanReport, SemanticEngine,
-    SqliteScanHistoryRepository, DEFAULT_GEMINI_MODEL, DEFAULT_OLLAMA_ENDPOINT,
-    DEFAULT_OLLAMA_MODEL, GEMINI_MODEL_ENV, OLLAMA_ENDPOINT_ENV, OLLAMA_MODEL_ENV, TIER0_OWNED_IDS,
+    block_on, is_semantic_rule, resolve_gemini_key,
+    scan_project_provisional_with_engine_history_status, write_markdown_report, CredentialStore,
+    EngineStatusSnapshot, FindingBatch, GeminiFixProvider, JevConfig, JevDiagnostics,
+    KeyringCredentialStore, OllamaFixProvider, ProviderDiagnostic, RulesStore, SafePatchApplier,
+    ScanReport, SemanticEngine, SqliteScanHistoryRepository, DEFAULT_GEMINI_MODEL,
+    DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL, GEMINI_MODEL_ENV, OLLAMA_ENDPOINT_ENV,
+    OLLAMA_MODEL_ENV, TIER0_OWNED_IDS,
 };
 use coderadar_usecases::{
-    FixFinding, GenerateFix, GenerativeFixProvider, PatchApplier, PreparePatch,
-    ScanHistoryRepository, SourceFileReader,
+    BoxFuture, FixFinding, GenerateFix, GenerativeFixProvider, PatchApplier, PreparePatch,
+    ScanHistoryRepository, SourceFile, SourceFileReader,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -36,7 +37,7 @@ const HISTORY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// installed in a [`OnceLock`] as soon as the opener thread is done; the
 /// readers wait for it — always on a worker thread, never on the UI thread.
 struct HistoryHandle {
-    ready: OnceLock<SqliteScanHistoryRepository>,
+    ready: OnceLock<(SqliteScanHistoryRepository, bool)>,
 }
 
 impl HistoryHandle {
@@ -54,10 +55,15 @@ impl HistoryHandle {
     fn open(&self) {
         let repository = SqliteScanHistoryRepository::default_path()
             .and_then(SqliteScanHistoryRepository::open)
+            .map(|repository| (repository, true))
             .unwrap_or_else(|error| {
                 eprintln!("[coderadar] the scan history is disabled: {error}");
-                SqliteScanHistoryRepository::open_in_memory()
-                    .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"))
+                (
+                    SqliteScanHistoryRepository::open_in_memory().unwrap_or_else(|fatal| {
+                        panic!("cannot open the in-memory history: {fatal}")
+                    }),
+                    false,
+                )
             });
         let _ = self.ready.set(repository);
     }
@@ -66,7 +72,7 @@ impl HistoryHandle {
     ///
     /// When the opener thread does not deliver the database in time, an
     /// in-memory database is installed as a fallback so the UI keeps working.
-    fn repository(&self) -> &SqliteScanHistoryRepository {
+    fn repository(&self) -> &(SqliteScanHistoryRepository, bool) {
         let deadline = Instant::now() + HISTORY_OPEN_TIMEOUT;
         while self.ready.get().is_none() && Instant::now() < deadline {
             std::thread::sleep(HISTORY_POLL_INTERVAL);
@@ -78,11 +84,19 @@ impl HistoryHandle {
         // The opener thread is stuck: fall back to an in-memory database.
         let fallback = SqliteScanHistoryRepository::open_in_memory()
             .unwrap_or_else(|fatal| panic!("cannot open the in-memory history: {fatal}"));
-        let _ = self.ready.set(fallback);
+        let _ = self.ready.set((fallback, false));
         self.ready
             .get()
             .expect("the history repository is installed")
     }
+}
+
+/// Desktop scan response with history durability separate from scan success.
+#[derive(Clone, Serialize)]
+pub struct DesktopScanReport {
+    #[serde(flatten)]
+    report: ScanReport,
+    history_status: &'static str,
 }
 
 /// Process-wide engine state shared by every command.
@@ -90,13 +104,156 @@ impl HistoryHandle {
 /// The [`SemanticEngine`] is swapped whenever the stored API key changes, so a
 /// scan started after `store_api_key`/`clear_api_key` picks up the new engine.
 pub struct AppState {
-    engine: RwLock<SemanticEngine>,
+    engine: RwLock<Arc<SemanticEngine>>,
     credentials: KeyringCredentialStore,
     tier2_credentials: KeyringCredentialStore,
     history: Arc<HistoryHandle>,
     /// The report of the last finished scan, kept so the UI can export it as a
     /// Markdown document. It is `None` until the first scan succeeds.
     last_report: RwLock<Option<ScanReport>>,
+    fix_authorization: Arc<RwLock<FixAuthorization>>,
+}
+
+#[derive(Clone)]
+struct AuthorizedFinding {
+    id: String,
+    file: String,
+    rule_id: String,
+    title: String,
+    description: String,
+    line_start: u32,
+    line_end: u32,
+    sha256: String,
+}
+
+#[derive(Default)]
+struct FixAuthorization {
+    generation: u64,
+    root: Option<String>,
+    findings: Vec<AuthorizedFinding>,
+    issued_proposals: Vec<PatchProposalDTO>,
+}
+
+impl FixAuthorization {
+    fn begin_scan(&mut self) -> u64 {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("scan generation exhausted");
+        self.root = None;
+        self.findings.clear();
+        self.issued_proposals.clear();
+        self.generation
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    fn finish_scan(
+        &mut self,
+        generation: u64,
+        root: String,
+        full: bool,
+        findings: Vec<AuthorizedFinding>,
+    ) {
+        if self.generation == generation && full {
+            self.root = Some(root);
+            self.findings = findings;
+        }
+    }
+
+    fn find(
+        &self,
+        root: &str,
+        id: &str,
+        file: &str,
+        rule: &str,
+    ) -> Result<&AuthorizedFinding, String> {
+        self.findings.iter().find(|finding| {
+            self.root.as_deref() == Some(root)
+                && finding.id == id && finding.file == file && finding.rule_id == rule
+        }).ok_or_else(|| "Fixes are available only for findings from the latest completed full scan of this workspace; staged or unrecognized findings are refused.".to_string())
+    }
+
+    fn issue(
+        &mut self,
+        generation: u64,
+        root: &str,
+        finding: &AuthorizedFinding,
+        proposal: &PatchProposalDTO,
+    ) -> Result<(), String> {
+        if self.generation != generation
+            || self
+                .find(root, &finding.id, &finding.file, &finding.rule_id)?
+                .sha256
+                != finding.sha256
+            || proposal.file_path != finding.file
+            || proposal.rule_id != finding.rule_id
+            || proposal.original_sha256 != finding.sha256
+        {
+            return Err(
+                "Fix authorization expired or proposal does not match the scanned source".into(),
+            );
+        }
+        if !self.issued_proposals.contains(proposal) {
+            if self.issued_proposals.len() >= 32 {
+                return Err("Too many outstanding patch previews; start a new scan".into());
+            }
+            self.issued_proposals.push(proposal.clone());
+        }
+        Ok(())
+    }
+
+    fn issued(&self, root: &str, proposal: &PatchProposalDTO) -> Result<&PatchProposalDTO, String> {
+        self.issued_proposals
+            .iter()
+            .find(|issued| self.root.as_deref() == Some(root) && *issued == proposal)
+            .ok_or_else(|| "Patch was not issued for the latest completed scan".to_string())
+    }
+
+    fn take_issued(
+        &mut self,
+        root: &str,
+        proposal: &PatchProposalDTO,
+    ) -> Result<PatchProposalDTO, String> {
+        self.issued(root, proposal)?;
+        let index = self
+            .issued_proposals
+            .iter()
+            .position(|issued| issued == proposal)
+            .expect("issued proposal exists");
+        Ok(self.issued_proposals.remove(index))
+    }
+}
+
+fn verify_snapshot(expected: &str, content: &str) -> Result<(), String> {
+    if coderadar_infrastructure::sha256_hex(content) != expected {
+        return Err(
+            "Source changed since the scan; run a new full scan before proposing a fix".into(),
+        );
+    }
+    Ok(())
+}
+
+struct SnapshotReader(SourceFile);
+
+impl SourceFileReader for SnapshotReader {
+    fn read_source<'a>(
+        &'a self,
+        _root: &'a str,
+        _relative_path: &'a str,
+    ) -> BoxFuture<'a, Result<SourceFile, coderadar_domain::DomainError>> {
+        Box::pin(async move { Ok(self.0.clone()) })
+    }
+}
+
+fn read_verified_source(root: &str, finding: &AuthorizedFinding) -> Result<SourceFile, String> {
+    let reader = coderadar_infrastructure::FileSystemSourceReader::new();
+    let source = block_on(reader.read_source(root, &finding.file))
+        .map_err(|error| format!("Cannot read `{}`: {error}", finding.file))?;
+    verify_snapshot(&finding.sha256, &source.content)?;
+    Ok(source)
 }
 
 impl AppState {
@@ -110,11 +267,12 @@ impl AppState {
         std::thread::spawn(move || opener.open());
 
         Self {
-            engine: RwLock::new(SemanticEngine::from_environment()),
+            engine: RwLock::new(Arc::new(SemanticEngine::from_environment())),
             credentials: KeyringCredentialStore::new(),
             tier2_credentials: KeyringCredentialStore::gemini(),
             history,
             last_report: RwLock::new(None),
+            fix_authorization: Arc::new(RwLock::new(FixAuthorization::default())),
         }
     }
 }
@@ -133,8 +291,6 @@ pub struct EngineStatusPayload {
     engine: EngineStatusSnapshot,
     /// Whether an API key is configured.
     api_key_configured: bool,
-    /// Masked API key for display, e.g. `sk-or-…`.
-    api_key_masked: Option<String>,
     /// Number of deterministic Tier 0 rules active.
     tier0_rules_count: usize,
     /// Number of semantic (Mock/Jev) rules active.
@@ -149,7 +305,9 @@ pub struct EngineStatusPayload {
 
 impl EngineStatusPayload {
     /// Build the payload from an engine snapshot plus keychain/ruleset details.
-    fn from_snapshot(snapshot: EngineStatusSnapshot, key: Option<String>) -> Self {
+    fn from_snapshot(mut snapshot: EngineStatusSnapshot, key_configured: bool) -> Self {
+        // Provider errors must never cross the webview boundary.
+        snapshot.reason = snapshot.reason.map(|_| "Jev request failed".to_string());
         let active = RulesStore::new(RulesStore::default_data_dir()).active_or_embedded();
         let manifest = active.manifest;
         let rules = manifest.rules.as_slice();
@@ -167,8 +325,7 @@ impl EngineStatusPayload {
         );
 
         Self {
-            api_key_configured: key.is_some(),
-            api_key_masked: key.as_deref().map(mask_api_key),
+            api_key_configured: key_configured,
             tier0_rules_count,
             semantic_rules_count,
             total_rules,
@@ -187,8 +344,23 @@ fn current_status(state: &AppState) -> EngineStatusPayload {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .status()
         .snapshot();
-    let key = state.credentials.get_api_key().ok().flatten();
-    EngineStatusPayload::from_snapshot(snapshot, key)
+    let key_configured = state.credentials.get_api_key().ok().flatten().is_some();
+    EngineStatusPayload::from_snapshot(snapshot, key_configured)
+}
+
+/// Check provider authentication or explicitly run a fixed synthetic inference.
+#[tauri::command]
+pub async fn check_provider_diagnostic(synthetic: bool) -> Result<ProviderDiagnostic, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let diagnostics = JevDiagnostics::from_environment();
+        if synthetic {
+            diagnostics.check_synthetic()
+        } else {
+            diagnostics.check_metadata()
+        }
+    })
+    .await
+    .map_err(|_| "Provider check could not be completed".to_string())
 }
 
 /// Scan mode requested by the UI.
@@ -217,57 +389,108 @@ pub async fn start_scan(
     app: tauri::AppHandle,
     path: String,
     mode: ScanModeArg,
-) -> Result<ScanReport, String> {
+    event_token: Option<String>,
+) -> Result<DesktopScanReport, String> {
+    let authorization = app.state::<AppState>().fix_authorization.clone();
+    let generation = authorization
+        .write()
+        .map_err(|_| "Fix authorization lock poisoned".to_string())?
+        .begin_scan();
     let scan_mode = ScanMode::from(mode);
+    if event_token.as_ref().is_some_and(|token| {
+        token.is_empty()
+            || token.len() > 64
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    }) {
+        return Err("Invalid scan event token".into());
+    }
+    let event_name = |kind: &str| match &event_token {
+        Some(token) => format!("coderadar://scan-{kind}-{token}"),
+        None => format!("coderadar://scan-{kind}"),
+    };
+    let batch_event = event_name("provisional");
+    let complete_event = event_name("complete");
+    let error_event = event_name("error");
 
     let root_path = PathBuf::from(&path);
     if !root_path.exists() {
         return Err(format!("Directory path does not exist: {path}"));
     }
 
-    let evaluator = app
-        .state::<AppState>()
-        .engine
-        .read()
-        .map_err(|_| "Engine state lock poisoned".to_string())?
-        .evaluator();
+    let engine = {
+        let state = app.state::<AppState>();
+        let engine = state
+            .engine
+            .read()
+            .map_err(|_| "Engine state lock poisoned".to_string())?;
+        Arc::clone(&engine)
+    };
 
     let history = app.state::<AppState>().history.clone();
 
     let app_handle = app.clone();
-    let engine_for_label = app.clone();
+    let batch_authorization = authorization.clone();
     let scan_result = tauri::async_runtime::spawn_blocking(move || {
         // The repository is resolved inside the worker thread: waiting for
         // the opener thread must never happen on the UI thread.
-        let repository = history.repository().clone();
+        let (repository, durable) = history.repository();
         let app_for_batches = app_handle;
-        scan_project_streaming_with_history_mode(
+        scan_project_provisional_with_engine_history_status(
             &root_path,
-            evaluator,
+            &engine,
             Duration::from_millis(100),
             scan_mode,
             move |batch: FindingBatch| {
-                let _ = app_for_batches.emit("coderadar://scan-batch", &batch);
+                if let Ok(auth) = batch_authorization.read() {
+                    if auth.is_current(generation) {
+                        let _ = app_for_batches.emit(&batch_event, &batch);
+                    }
+                }
             },
-            &repository,
-            // The engine mode is read lazily, once the scan has finished, so
-            // a Jev batch that fell back to Mock mid-run is recorded as
-            // `mock_fallback` and not as `jev` (`CR-SPEC-12 §4`).
-            move || {
-                engine_for_label
-                    .state::<AppState>()
-                    .engine
-                    .read()
-                    .map(|engine| engine.status().mode().as_str().to_string())
-                    .unwrap_or_else(|_| "mock".to_string())
-            },
+            repository,
         )
+        .map(|(report, saved)| (report, *durable, saved))
     })
     .await
     .map_err(|e| format!("Scan task join error: {e}"))?;
 
     match scan_result {
-        Ok(report) => {
+        Ok((report, durable, saved)) => {
+            let mut auth = authorization
+                .write()
+                .map_err(|_| "Fix authorization lock poisoned".to_string())?;
+            if auth.generation != generation {
+                return Err("Scan superseded by a newer scan".to_string());
+            }
+            let findings = report
+                .findings
+                .iter()
+                .filter_map(|finding| {
+                    Some(AuthorizedFinding {
+                        id: finding.id.clone(),
+                        file: finding.file.clone(),
+                        rule_id: finding.rule_id.clone(),
+                        title: finding.title.clone(),
+                        description: finding.description.clone(),
+                        line_start: finding.line_start,
+                        line_end: finding.line_end,
+                        sha256: report
+                            .scan
+                            .analyzed_sources
+                            .as_ref()?
+                            .get(&finding.file)?
+                            .clone(),
+                    })
+                })
+                .collect();
+            auth.finish_scan(
+                generation,
+                path,
+                report.session.mode == "full_scan",
+                findings,
+            );
             // Keep the finished report so the UI can export it as Markdown.
             let state = app.state::<AppState>();
             let mut last_report = state
@@ -277,12 +500,27 @@ pub async fn start_scan(
             *last_report = Some(report.clone());
             drop(last_report);
 
-            let _ = app.emit("coderadar://scan-complete", &report);
-            Ok(report)
+            let response = DesktopScanReport {
+                report,
+                history_status: if !saved {
+                    "save_failed"
+                } else if !durable {
+                    "in_memory"
+                } else {
+                    "saved"
+                },
+            };
+            let _ = app.emit(&complete_event, &response);
+            drop(auth);
+            Ok(response)
         }
         Err(err) => {
             let error_msg = err.to_string();
-            let _ = app.emit("coderadar://scan-error", &error_msg);
+            if let Ok(auth) = authorization.read() {
+                if auth.is_current(generation) {
+                    let _ = app.emit(&error_event, &error_msg);
+                }
+            }
             Err(error_msg)
         }
     }
@@ -315,7 +553,7 @@ pub fn store_api_key(
     state
         .credentials
         .set_api_key(trimmed)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Could not store the API key in the keychain".to_string())?;
 
     let rebuilt = SemanticEngine::live(JevConfig {
         api_key: trimmed.to_string(),
@@ -327,7 +565,7 @@ pub fn store_api_key(
         .engine
         .write()
         .map_err(|_| "Engine state lock poisoned".to_string())?;
-    *engine = rebuilt;
+    *engine = Arc::new(rebuilt);
     drop(engine);
 
     Ok(current_status(&state))
@@ -339,13 +577,13 @@ pub fn clear_api_key(state: tauri::State<'_, AppState>) -> Result<EngineStatusPa
     state
         .credentials
         .delete_api_key()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Could not remove the API key from the keychain".to_string())?;
 
     let mut engine = state
         .engine
         .write()
         .map_err(|_| "Engine state lock poisoned".to_string())?;
-    *engine = SemanticEngine::from_environment();
+    *engine = Arc::new(SemanticEngine::from_environment());
     drop(engine);
 
     Ok(current_status(&state))
@@ -406,7 +644,7 @@ pub fn store_tier2_key(
     state
         .tier2_credentials
         .set_api_key(trimmed)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Could not store the Gemini key in the keychain".to_string())?;
     Ok(tier2_status())
 }
 
@@ -416,7 +654,7 @@ pub fn clear_tier2_key(state: tauri::State<'_, AppState>) -> Result<Tier2StatusP
     state
         .tier2_credentials
         .delete_api_key()
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Could not remove the Gemini key from the keychain".to_string())?;
     Ok(tier2_status())
 }
 
@@ -425,6 +663,8 @@ pub fn clear_tier2_key(state: tauri::State<'_, AppState>) -> Result<Tier2StatusP
 pub struct Tier2FixRequestDTO {
     /// Workspace root.
     pub root_path: String,
+    /// Identifier of a finding from the latest completed scan.
+    pub finding_id: String,
     /// Workspace-relative file path.
     pub file_path: String,
     /// Rule identifier.
@@ -449,13 +689,51 @@ pub struct Tier2FixRequestDTO {
 /// Nothing is written: the proposal is rendered exactly like a deterministic
 /// fix, so the user reviews the diff and applies it through `apply_patch`.
 #[tauri::command]
-pub async fn generate_fix(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, String> {
-    tauri::async_runtime::spawn_blocking(move || build_tier2_preview(request))
-        .await
-        .map_err(|error| format!("Tier 2 task join error: {error}"))?
+pub async fn generate_fix(
+    state: tauri::State<'_, AppState>,
+    mut request: Tier2FixRequestDTO,
+) -> Result<PatchPreviewDTO, String> {
+    let authorization = state.fix_authorization.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (generation, finding) = {
+            let auth = authorization
+                .read()
+                .map_err(|_| "Fix authorization lock poisoned".to_string())?;
+            (
+                auth.generation,
+                auth.find(
+                    &request.root_path,
+                    &request.finding_id,
+                    &request.file_path,
+                    &request.rule_id,
+                )?
+                .clone(),
+            )
+        };
+        request.title = finding.title.clone();
+        request.description = finding.description.clone();
+        request.line_start = finding.line_start;
+        request.line_end = finding.line_end;
+        let source = read_verified_source(&request.root_path, &finding)?;
+        let preview = build_tier2_preview(&request, &source)?;
+        read_verified_source(&request.root_path, &finding)?;
+        authorize_preview(
+            &authorization,
+            generation,
+            &request.root_path,
+            &finding,
+            &preview,
+        )?;
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| format!("Tier 2 task join error: {error}"))?
 }
 
-fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, String> {
+fn build_tier2_preview(
+    request: &Tier2FixRequestDTO,
+    source: &SourceFile,
+) -> Result<PatchPreviewDTO, String> {
     let provider: Arc<dyn GenerativeFixProvider> = match request.provider.as_str() {
         "ollama" => Arc::new(OllamaFixProvider::from_env().map_err(|error| error.to_string())?),
         "gemini" => {
@@ -480,9 +758,8 @@ fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, S
         }
     };
 
-    let reader: Arc<dyn SourceFileReader> =
-        Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
-    let generator = GenerateFix::new(provider, Arc::clone(&reader));
+    let reader: Arc<dyn SourceFileReader> = Arc::new(SnapshotReader(source.clone()));
+    let generator = GenerateFix::new(provider, reader);
     let finding = FixFinding {
         file_path: request.file_path.clone(),
         rule_id: request.rule_id.clone(),
@@ -493,15 +770,12 @@ fn build_tier2_preview(request: Tier2FixRequestDTO) -> Result<PatchPreviewDTO, S
     };
     let generated = block_on(generator.generate(&request.root_path, &finding))
         .map_err(|error| format!("The Tier 2 model cannot produce a fix: {error}"))?;
-    let source = block_on(reader.read_source(&request.root_path, &request.file_path))
-        .map_err(|error| format!("Cannot read `{}`: {error}", request.file_path))?;
-
-    Ok(preview_from_proposal(
+    preview_from_proposal(
         generated.proposal,
         &source.content,
         format!("Tier 2 fix for {}", request.rule_id),
         generated.warnings,
-    ))
+    )
 }
 
 /// Retrieve default workspace path or fixture path.
@@ -524,13 +798,32 @@ pub fn get_default_scan_path() -> String {
 /// and the fingerprint it carries always describe the same bytes.
 #[tauri::command]
 pub async fn preview_patch(
+    state: tauri::State<'_, AppState>,
     root_path: String,
+    finding_id: String,
     file_path: String,
     rule_id: String,
 ) -> Result<PatchPreviewDTO, String> {
-    tauri::async_runtime::spawn_blocking(move || build_preview(root_path, file_path, rule_id))
-        .await
-        .map_err(|error| format!("Patch preview task join error: {error}"))?
+    let authorization = state.fix_authorization.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (generation, finding) = {
+            let auth = authorization
+                .read()
+                .map_err(|_| "Fix authorization lock poisoned".to_string())?;
+            (
+                auth.generation,
+                auth.find(&root_path, &finding_id, &file_path, &rule_id)?
+                    .clone(),
+            )
+        };
+        let source = read_verified_source(&root_path, &finding)?;
+        let preview = build_preview(&file_path, &rule_id, &source)?;
+        read_verified_source(&root_path, &finding)?;
+        authorize_preview(&authorization, generation, &root_path, &finding, &preview)?;
+        Ok(preview)
+    })
+    .await
+    .map_err(|error| format!("Patch preview task join error: {error}"))?
 }
 
 /// Prepare the proposal and render its unified diff.
@@ -538,32 +831,30 @@ pub async fn preview_patch(
 /// A finding without a deterministic fix is not an error: the preview carries
 /// no proposal and the modal explains why (`CR-SPEC-13 §5`).
 fn build_preview(
-    root_path: String,
-    file_path: String,
-    rule_id: String,
+    file_path: &str,
+    rule_id: &str,
+    source: &SourceFile,
 ) -> Result<PatchPreviewDTO, String> {
     let reader = Arc::new(coderadar_infrastructure::FileSystemSourceReader::new());
-    let source = block_on(reader.read_source(&root_path, &file_path))
-        .map_err(|error| format!("Cannot read `{file_path}`: {error}"))?;
 
-    if coderadar_usecases::template_for(&rule_id).is_none() {
+    if coderadar_usecases::template_for(rule_id).is_none() {
         return Ok(no_proposal_preview(
-            &source,
-            &file_path,
-            &rule_id,
+            source,
+            file_path,
+            rule_id,
             format!("No deterministic fix template exists for rule `{rule_id}`."),
             Vec::new(),
         ));
     }
 
     let prepare = PreparePatch::new(reader);
-    let proposal = match block_on(prepare.prepare_from_source(&source, &file_path, &rule_id)) {
+    let proposal = match block_on(prepare.prepare_from_source(source, file_path, rule_id)) {
         Ok(proposal) => proposal,
         Err(error) => {
             return Ok(no_proposal_preview(
-                &source,
-                &file_path,
-                &rule_id,
+                source,
+                file_path,
+                rule_id,
                 format!(
                 "The deterministic template for rule `{rule_id}` does not match this file exactly."
             ),
@@ -572,16 +863,36 @@ fn build_preview(
         }
     };
 
-    let title = coderadar_usecases::template_for(&rule_id)
+    let title = coderadar_usecases::template_for(rule_id)
         .map(|template| template.title.to_string())
         .unwrap_or_else(|| format!("Deterministic fix for {rule_id}"));
 
-    Ok(preview_from_proposal(
-        proposal,
-        &source.content,
-        title,
-        Vec::new(),
-    ))
+    preview_from_proposal(proposal, &source.content, title, Vec::new())
+}
+
+fn authorize_preview(
+    authorization: &RwLock<FixAuthorization>,
+    generation: u64,
+    root: &str,
+    finding: &AuthorizedFinding,
+    preview: &PatchPreviewDTO,
+) -> Result<(), String> {
+    let mut auth = authorization
+        .write()
+        .map_err(|_| "Fix authorization lock poisoned".to_string())?;
+    if auth.generation != generation
+        || auth
+            .find(root, &finding.id, &finding.file, &finding.rule_id)?
+            .sha256
+            != finding.sha256
+        || preview.original_sha256 != finding.sha256
+    {
+        return Err("Fix authorization expired or source changed; run a new scan".into());
+    }
+    if let Some(proposal) = &preview.proposal {
+        auth.issue(generation, root, finding, proposal)?;
+    }
+    Ok(())
 }
 
 /// Render a proposal against the original content as a UI preview.
@@ -590,9 +901,10 @@ fn preview_from_proposal(
     original_content: &str,
     title: String,
     warnings: Vec<String>,
-) -> PatchPreviewDTO {
+) -> Result<PatchPreviewDTO, String> {
+    verify_snapshot(&proposal.original_sha256, original_content)?;
     let diff = unified_diff(original_content, &proposal.new_content, &proposal.file_path);
-    PatchPreviewDTO {
+    Ok(PatchPreviewDTO {
         file_path: proposal.file_path.clone(),
         rule_id: proposal.rule_id.clone(),
         title,
@@ -605,7 +917,7 @@ fn preview_from_proposal(
         removed_lines: diff.removed_lines,
         warnings,
         proposal: Some(PatchProposalDTO::from_proposal(&proposal, diff.text)),
-    }
+    })
 }
 
 /// Build the preview of a finding that has no deterministic fix.
@@ -642,12 +954,17 @@ fn no_proposal_preview(
 /// SHA-256 fingerprint does not match) and always writes atomically.
 #[tauri::command]
 pub async fn apply_patch(
+    state: tauri::State<'_, AppState>,
     root_path: String,
     proposal: PatchProposalDTO,
 ) -> Result<PatchOutcomeDTO, String> {
+    let authorization = state.fix_authorization.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let mut auth = authorization
+            .write()
+            .map_err(|_| "Fix authorization lock poisoned".to_string())?;
+        let domain_proposal = auth.take_issued(&root_path, &proposal)?.to_proposal();
         let applier = SafePatchApplier::new();
-        let domain_proposal = proposal.to_proposal();
         let outcome = block_on(applier.apply_patch(&root_path, &domain_proposal))
             .map_err(|error| format!("The patch could not be applied: {error}"))?;
         Ok(PatchOutcomeDTO::from_outcome(&outcome))
@@ -670,7 +987,7 @@ pub async fn get_scan_history(
     tauri::async_runtime::spawn_blocking(move || {
         // The repository is resolved inside the worker thread: waiting for
         // the opener thread must never happen on the UI thread.
-        let repository = history.repository().clone();
+        let repository = history.repository().0.clone();
         let root = root_path
             .as_deref()
             .map(str::trim)
@@ -730,4 +1047,123 @@ pub async fn export_report(
     })
     .await
     .map_err(|error| format!("Report export task join error: {error}"))?
+}
+
+#[cfg(test)]
+mod fix_safety_tests {
+    use super::*;
+
+    #[test]
+    fn only_latest_completed_full_scan_authorizes_matching_findings() {
+        let mut auth = FixAuthorization::default();
+        let old = auth.begin_scan();
+        let current = auth.begin_scan();
+        let finding = AuthorizedFinding {
+            id: "id".into(),
+            file: "a".into(),
+            rule_id: "rule".into(),
+            title: "title".into(),
+            description: "description".into(),
+            line_start: 1,
+            line_end: 2,
+            sha256: "hash".into(),
+        };
+        auth.finish_scan(old, "/root".into(), true, vec![finding.clone()]);
+        assert!(auth.find("/root", "id", "a", "rule").is_err());
+        auth.finish_scan(current, "/root".into(), true, vec![finding.clone()]);
+        assert!(auth.find("/root", "id", "a", "rule").is_ok());
+        assert!(auth.find("/other", "id", "a", "rule").is_err());
+        assert!(auth.find("/root", "other", "a", "rule").is_err());
+        assert!(auth.find("/root", "id", "b", "rule").is_err());
+        let staged = auth.begin_scan();
+        assert!(auth.find("/root", "id", "a", "rule").is_err());
+        auth.finish_scan(staged, "/root".into(), false, vec![finding]);
+        assert!(auth.find("/root", "id", "a", "rule").is_err());
+    }
+
+    #[test]
+    fn unrecognized_fix_requests_are_refused_without_a_scan() {
+        assert!(FixAuthorization::default()
+            .find("missing", "id", "file", "rule")
+            .is_err());
+    }
+
+    #[test]
+    fn superseded_scan_cannot_publish_and_multiple_previews_remain_issued() {
+        let mut auth = FixAuthorization::default();
+        let old = auth.begin_scan();
+        let generation = auth.begin_scan();
+        assert!(!auth.is_current(old));
+        assert!(auth.is_current(generation));
+        let finding = AuthorizedFinding {
+            id: "id".into(),
+            file: "a".into(),
+            rule_id: "rule".into(),
+            title: "title".into(),
+            description: "description".into(),
+            line_start: 1,
+            line_end: 1,
+            sha256: "hash".into(),
+        };
+        auth.finish_scan(generation, "root".into(), true, vec![finding.clone()]);
+        let proposal =
+            coderadar_domain::PatchProposal::new("a", "rule", "hash", 1, vec![], "first", "reason");
+        let first = PatchProposalDTO::from_proposal(&proposal, "first".into());
+        let mut second = first.clone();
+        second.new_content = "second".into();
+        auth.issue(generation, "root", &finding, &first).unwrap();
+        auth.issue(generation, "root", &finding, &second).unwrap();
+        assert!(auth.issued("root", &first).is_ok());
+        assert!(auth.issued("root", &second).is_ok());
+        auth.take_issued("root", &first).unwrap();
+        assert!(auth.issued("root", &first).is_err());
+        assert!(auth.issued("root", &second).is_ok());
+    }
+
+    #[test]
+    fn snapshot_and_issued_proposals_are_bound_to_generation() {
+        let mut auth = FixAuthorization::default();
+        let generation = auth.begin_scan();
+        let finding = AuthorizedFinding {
+            id: "id".into(),
+            file: "a".into(),
+            rule_id: "rule".into(),
+            title: "title".into(),
+            description: "description".into(),
+            line_start: 1,
+            line_end: 1,
+            sha256: coderadar_infrastructure::sha256_hex("old"),
+        };
+        auth.finish_scan(generation, "root".into(), true, vec![finding.clone()]);
+        assert!(verify_snapshot(&finding.sha256, "changed").is_err());
+        assert!(verify_snapshot(&finding.sha256, "old").is_ok());
+        let proposal = coderadar_domain::PatchProposal::new(
+            "a",
+            "rule",
+            finding.sha256.clone(),
+            1,
+            vec![],
+            "new",
+            "reason",
+        );
+        let dto = PatchProposalDTO::from_proposal(&proposal, "diff".into());
+        assert!(
+            preview_from_proposal(proposal.clone(), "changed", "title".into(), vec![]).is_err()
+        );
+        assert!(preview_from_proposal(proposal, "old", "title".into(), vec![]).is_ok());
+        let mut wrong_hash = dto.clone();
+        wrong_hash.original_sha256 = "other".into();
+        assert!(auth
+            .issue(generation, "root", &finding, &wrong_hash)
+            .is_err());
+        assert!(auth.issue(generation, "root", &finding, &dto).is_ok());
+        assert!(auth.issued("root", &dto).is_ok());
+        assert!(auth.issued("other", &dto).is_err());
+        let mut forged = dto.clone();
+        forged.new_content = "forged".into();
+        assert!(auth.issued("root", &forged).is_err());
+        auth.begin_scan();
+        assert!(auth.issued("root", &dto).is_err());
+        assert!(auth.issue(generation, "root", &finding, &dto).is_err());
+    }
 }

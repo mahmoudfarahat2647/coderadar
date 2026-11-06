@@ -134,7 +134,7 @@ export const Header: React.FC<HeaderProps> = ({
             title={engineStatus.description}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${engineTone(engineStatus).dot}`} />
-            <span className="font-semibold">{engineTone(engineStatus).label}</span>
+            <span className="font-semibold">Provider: {engineTone(engineStatus).label}</span>
             <span className="text-text-muted">|</span>
             <span className="text-text-muted">{engineStatus.ruleset_version}</span>
           </div>

@@ -9,11 +9,111 @@
 //! exported / public signatures (`PR-BRK-002`), and exposes the changed paths
 //! so a staged scan only analyses the files under review.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use coderadar_domain::{is_public_api_removal, Changeset, DomainError, FileChange};
 use coderadar_usecases::{BoxFuture, ChangesetGateway};
-use git2::{DiffOptions, ErrorCode, Patch, Repository};
+use git2::{DiffOptions, ErrorCode, Oid, Patch, Repository};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
+/// One captured index and its corresponding HEAD diff.
+///
+/// Blob identities are retained for all regular indexed files, including
+/// unchanged files needed by later context construction. No source is read
+/// from the working tree. Unmerged indexes are rejected at capture time.
+#[derive(Debug, Clone)]
+pub struct StagedSnapshot {
+    root: PathBuf,
+    changeset: Changeset,
+    blobs: BTreeMap<String, Oid>,
+    ignores: BTreeMap<String, Gitignore>,
+}
+
+impl StagedSnapshot {
+    pub(crate) fn is_ignored(&self, path: &str) -> bool {
+        let components: Vec<_> = path.split('/').collect();
+        let mut prefix = String::new();
+        for (position, component) in components.iter().enumerate() {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            let mut ignored = false;
+            for (directory, matcher) in &self.ignores {
+                if directory.is_empty()
+                    || prefix
+                        .strip_prefix(directory)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                {
+                    let matched = matcher.matched(&prefix, position + 1 < components.len());
+                    if matched.is_ignore() {
+                        ignored = true;
+                    } else if matched.is_whitelist() {
+                        ignored = false;
+                    }
+                }
+            }
+            if ignored {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn belongs_to(&self, root: &Path) -> Result<bool, DomainError> {
+        let repository = Repository::open(root).map_err(|error| {
+            DomainError::External(format!("cannot open scan repository: {error}"))
+        })?;
+        let expected = std::fs::canonicalize(&self.root).map_err(|error| {
+            DomainError::External(format!("cannot verify captured repository: {error}"))
+        })?;
+        let actual = std::fs::canonicalize(repository.path()).map_err(|error| {
+            DomainError::External(format!("cannot verify scan repository: {error}"))
+        })?;
+        Ok(expected == actual)
+    }
+
+    /// Return the changeset derived from this same captured index.
+    pub fn changeset(&self) -> &Changeset {
+        &self.changeset
+    }
+
+    /// Return the Git object identity of a captured regular-file blob.
+    pub fn blob_id(&self, path: &str) -> Option<String> {
+        self.blobs.get(path).map(ToString::to_string)
+    }
+
+    /// Read a captured regular-file blob, subject to a byte limit.
+    ///
+    /// Returns `None` for absent, non-regular, unsafe or oversized paths.
+    ///
+    /// # Errors
+    /// Returns an error if the repository or captured object is unavailable.
+    pub fn read_blob(&self, path: &str, max_bytes: u64) -> Result<Option<Vec<u8>>, DomainError> {
+        let Some(id) = self.blobs.get(path) else {
+            return Ok(None);
+        };
+        let repository = Repository::open(&self.root)
+            .map_err(|e| DomainError::External(format!("cannot open captured repository: {e}")))?;
+        let blob = repository
+            .find_blob(*id)
+            .map_err(|e| DomainError::External(format!("cannot read captured Git blob: {e}")))?;
+        if blob.size() as u64 > max_bytes {
+            return Ok(None);
+        }
+        Ok(Some(blob.content().to_vec()))
+    }
+}
+
+impl ChangesetGateway for StagedSnapshot {
+    fn staged_changeset<'a>(
+        &'a self,
+        _root: &'a str,
+    ) -> BoxFuture<'a, Result<Changeset, DomainError>> {
+        Box::pin(async move { Ok(self.changeset.clone()) })
+    }
+}
 
 /// Reads staged changesets with libgit2.
 #[derive(Debug, Clone, Copy, Default)]
@@ -31,6 +131,15 @@ impl GitChangesetReader {
     /// Returns [`DomainError::NotFound`] when `root` is not a Git repository
     /// and [`DomainError::External`] when the index cannot be read.
     pub fn read_staged(root: &Path) -> Result<Changeset, DomainError> {
+        Ok(Self::capture_staged(root)?.changeset)
+    }
+
+    /// Capture an index once for both source blobs and the changeset.
+    ///
+    /// # Errors
+    /// Returns an error for an inaccessible repository, index, diff, or an
+    /// unmerged index, which cannot represent a single staged source tree.
+    pub fn capture_staged(root: &Path) -> Result<StagedSnapshot, DomainError> {
         let repository = Repository::open(root).map_err(|error| {
             if error.code() == ErrorCode::NotFound {
                 DomainError::NotFound(format!(
@@ -45,6 +154,57 @@ impl GitChangesetReader {
         let index = repository.index().map_err(|error| {
             DomainError::External(format!("cannot read the Git index: {error}"))
         })?;
+        if index.has_conflicts() {
+            return Err(DomainError::External(
+                "cannot capture an unmerged Git index; resolve conflicts and retry".to_string(),
+            ));
+        }
+        let mut blobs = BTreeMap::new();
+        for entry in index.iter() {
+            if !matches!(entry.mode, 0o100644 | 0o100755) {
+                continue;
+            }
+            let Ok(path) = std::str::from_utf8(&entry.path) else {
+                continue;
+            };
+            if safe_index_path(path) {
+                blobs.insert(path.to_string(), entry.id);
+            }
+        }
+
+        let mut ignores = BTreeMap::new();
+        for (path, id) in &blobs {
+            if path != ".gitignore" && !path.ends_with("/.gitignore") {
+                continue;
+            }
+            let blob = repository.find_blob(*id).map_err(|error| {
+                DomainError::External(format!("cannot read staged ignore file `{path}`: {error}"))
+            })?;
+            let contents = std::str::from_utf8(blob.content()).map_err(|error| {
+                DomainError::External(format!("invalid staged ignore file `{path}`: {error}"))
+            })?;
+            let directory = path
+                .strip_suffix(".gitignore")
+                .unwrap()
+                .trim_end_matches('/');
+            let mut builder =
+                GitignoreBuilder::new(if directory.is_empty() { "." } else { directory });
+            for line in contents.lines() {
+                builder
+                    .add_line(Some(PathBuf::from(path)), line)
+                    .map_err(|error| {
+                        DomainError::External(format!(
+                            "invalid staged ignore file `{path}`: {error}"
+                        ))
+                    })?;
+            }
+            ignores.insert(
+                directory.to_string(),
+                builder.build().map_err(|error| {
+                    DomainError::External(format!("invalid staged ignore file `{path}`: {error}"))
+                })?,
+            );
+        }
 
         let (base, base_tree) = match repository.head() {
             Ok(head) => {
@@ -80,13 +240,12 @@ impl GitChangesetReader {
         for (position, delta) in diff.deltas().enumerate() {
             let path = delta
                 .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .map(slash_path)
-                .unwrap_or_default();
-            if path.is_empty() {
+                .path_bytes()
+                .or_else(|| delta.old_file().path_bytes())
+                .and_then(|bytes| std::str::from_utf8(bytes).ok());
+            let Some(path) = path.filter(|path| safe_index_path(path)) else {
                 continue;
-            }
+            };
 
             let (additions, deletions, removed_public_api) = match Patch::from_diff(&diff, position)
             {
@@ -102,13 +261,26 @@ impl GitChangesetReader {
             };
 
             files.push(
-                FileChange::new(path, additions, deletions)
+                FileChange::new(path.to_string(), additions, deletions)
                     .with_removed_public_api(removed_public_api),
             );
         }
 
-        Ok(Changeset::new(base, files))
+        Ok(StagedSnapshot {
+            root: repository.path().to_path_buf(),
+            changeset: Changeset::new(base, files),
+            blobs,
+            ignores,
+        })
     }
+}
+
+fn safe_index_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(':'))
 }
 
 impl ChangesetGateway for GitChangesetReader {
@@ -151,11 +323,6 @@ fn summarise_patch(patch: &Patch<'_>) -> Result<(u32, u32, Vec<String>), DomainE
         u32::try_from(deletions).unwrap_or(u32::MAX),
         removed_public_api,
     ))
-}
-
-/// Render a repository path with forward slashes.
-fn slash_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]

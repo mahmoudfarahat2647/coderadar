@@ -146,6 +146,44 @@ pub struct LayerMap {
 }
 
 impl LayerMap {
+    // Capture the exact configuration bytes used by the router (CR-SPEC-17 §3).
+    pub(crate) fn capture_full(root: &Path) -> (Self, Result<Option<String>, ()>) {
+        match read_configuration(root) {
+            Ok(Some(bytes)) => {
+                let fingerprint = crate::hashing::sha256_hex_bytes(&bytes);
+                let map = std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|json| Self::from_json(json).ok())
+                    .unwrap_or_else(Self::fallback);
+                (map, Ok(Some(fingerprint)))
+            }
+            Ok(None) => (Self::fallback(), Ok(None)),
+            Err(_) => (Self::fallback(), Err(())),
+        }
+    }
+
+    /// Load configuration from the captured index, never from the working tree.
+    /// Malformed configuration falls back to conventions, as in [`Self::load`].
+    ///
+    /// # Errors
+    /// Returns an error if the captured configuration cannot be read or is oversized.
+    pub fn load_staged(
+        snapshot: &crate::git_changeset::StagedSnapshot,
+    ) -> Result<Self, DomainError> {
+        if snapshot.blob_id(".coderadar.json").is_none() {
+            return Ok(Self::fallback());
+        }
+        let bytes = snapshot
+            .read_blob(".coderadar.json", crate::scanner::MAX_FILE_BYTES)?
+            .ok_or_else(|| {
+                DomainError::External("staged .coderadar.json exceeds the size limit".to_string())
+            })?;
+        Ok(std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|json| Self::from_json(json).ok())
+            .unwrap_or_else(Self::fallback))
+    }
+
     /// Load `root/.coderadar.json`; on any error fall back to conventions.
     ///
     /// A malformed file never aborts a scan — it degrades to the fallback
@@ -290,6 +328,31 @@ fn resolve_relative_specifier(importing_file: &str, specifier: &str) -> Option<S
         return None;
     }
     Some(segments.join("/"))
+}
+
+fn read_configuration(root: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let file = match std::fs::File::open(root.join(".coderadar.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut bytes = Vec::new();
+    file.take(crate::scanner::MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > crate::scanner::MAX_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "configuration exceeds size limit",
+        ));
+    }
+    Ok(Some(bytes))
+}
+
+pub(crate) fn configuration_fingerprint(root: &Path) -> Result<Option<String>, ()> {
+    read_configuration(root)
+        .map(|bytes| bytes.map(|bytes| crate::hashing::sha256_hex_bytes(&bytes)))
+        .map_err(|_| ())
 }
 
 #[cfg(test)]

@@ -9,10 +9,13 @@ import {
   trendDelta,
   trendPoints,
   trendPolyline,
+  trendSegments,
 } from "../utils/trendGeometry";
 
 interface TrendChartProps {
   points: HistoryPointDTO[];
+  error?: string | null;
+  loading?: boolean;
 }
 
 /** Fixed SVG coordinate space; the viewport scales responsively. */
@@ -23,7 +26,7 @@ const PADDING: TrendPadding = { top: 28, right: 28, bottom: 38, left: 46 };
 const GRID_VALUES = [0, 25, 50, 75, 100];
 
 /** Quality trend chart: compliance percentage over the recorded scan history. */
-export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
+export const TrendChart: React.FC<TrendChartProps> = ({ points, error, loading }) => {
   // The backend returns the newest scan first; the chart plots oldest -> newest.
   const ordered = useMemo(
     () =>
@@ -38,23 +41,16 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
     [ordered]
   );
 
-  const polyline = useMemo(() => trendPolyline(projected), [projected]);
-  const delta = useMemo(() => trendDelta(ordered), [ordered]);
+  const segments = useMemo(() => trendSegments(projected), [projected]);
+  const delta = useMemo(() => ordered.some((point) => point.coverage == null) ? null : trendDelta(ordered), [ordered]);
   const { scale } = useMemo(
     () => buildTrendScale(WIDTH, HEIGHT, PADDING),
     []
   );
 
-  const areaPath = useMemo(() => {
-    if (projected.length === 0) return "";
-    const baseline = HEIGHT - PADDING.bottom;
-    const line = projected
-      .map((point) => `L ${point.x} ${point.y}`)
-      .join(" ");
-    const first = projected[0];
-    const last = projected[projected.length - 1];
-    return `M ${first.x} ${baseline} ${line} L ${last.x} ${baseline} Z`;
-  }, [projected]);
+  if (error || loading) {
+    return <div className="flex-1 p-8 text-sm text-text-muted" role={error ? "alert" : "status"}>{error ? `Scan history could not be read: ${error}` : "Loading scan history..."}</div>;
+  }
 
   if (ordered.length === 0) {
     return (
@@ -93,7 +89,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
         </div>
         <div className="flex items-center space-x-2">
           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono uppercase bg-secondary/15 text-secondary border border-secondary/30 tabular-nums">
-            latest {latest.toFixed(1)}%
+            latest {latest == null ? "unavailable" : `${latest.toFixed(1)}%${lastPoint.coverage == null ? " (legacy)" : ""}`}
           </span>
           {delta !== null && (
             <span
@@ -118,6 +114,18 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
           )}
         </div>
       </div>
+
+      <p className="text-[11px] text-text-muted">Share of analyzed files without reported findings. Gaps indicate unavailable scores; older scores with unknown coverage are legacy metrics.</p>
+      <details className="text-[11px] text-text-muted">
+          <summary>Scan coverage and usage details</summary>
+        <ul>
+          {ordered.map((point) => (
+            <li key={point.id}>
+              {new Date(point.finished_at_unix_ms).toLocaleString()} · {`Completion: ${point.completion ?? "Unknown"}`} · {point.compliance_percent == null ? "Score unavailable" : `${point.compliance_percent}%${point.coverage == null ? " (legacy score)" : ""}`} · {point.coverage == null ? "Coverage not recorded" : `${point.coverage.discovered} discovered, ${point.coverage.supported} supported, ${point.coverage.analyzed} analyzed, ${point.coverage.unsupported} unsupported, ${point.coverage.excluded} excluded (accounting ${point.coverage.exclusions_complete === true ? "complete" : point.coverage.exclusions_complete === false ? "incomplete" : "unknown"}), ${point.coverage.unreadable} unreadable, ${point.coverage.oversized} oversized, ${point.coverage.invalid_encoding} invalid encoding, ${point.coverage.incomplete} incomplete`} · {point.usage == null ? "Usage: Unknown" : `Primary batches: ${point.usage.primary_batches}; Fallback batches: ${point.usage.fallback_batches}; Fallback failures: ${point.usage.fallback_failures}`}
+            </li>
+          ))}
+        </ul>
+      </details>
 
       {/* Chart viewport */}
       <div className="flex-1 min-h-0 bg-surface-canvas border border-border-subtle rounded-lg p-3 overflow-auto">
@@ -162,15 +170,11 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
             strokeWidth={1}
           />
 
-          {/* Area fill under the line */}
-          {projected.length > 1 && (
-            <path d={areaPath} className="fill-primary/10" />
-          )}
-
           {/* Trend line */}
-          {projected.length > 1 && (
+          {segments.filter((segment) => segment.length > 1).map((segment) => (
             <polyline
-              points={polyline}
+              key={segment[0].index}
+              points={trendPolyline(segment)}
               fill="none"
               stroke="currentColor"
               strokeWidth={2}
@@ -178,7 +182,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
               strokeLinecap="round"
               className="text-secondary"
             />
-          )}
+          ))}
 
           {/* Data points */}
           {projected.map((point) => (
@@ -186,7 +190,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
               <title>
                 {`${new Date(ordered[point.index].finished_at_unix_ms).toLocaleString()} · ${engineModeLabel(
                   ordered[point.index].engine_mode
-                )} · ${ordered[point.index].total_findings} findings${
+                )} · ${ordered[point.index].coverage == null ? "legacy score; coverage unknown" : `${ordered[point.index].coverage!.analyzed} analyzed of ${ordered[point.index].coverage!.supported} supported`} · ${ordered[point.index].total_findings} findings${
                   ordered[point.index].suppressed_heuristic_findings > 0
                     ? ` · ${ordered[point.index].suppressed_heuristic_findings} suppressed`
                     : ""
@@ -212,16 +216,16 @@ export const TrendChart: React.FC<TrendChartProps> = ({ points }) => {
 
           {/* First / last date labels */}
           <text
-            x={projected[0].x}
+            x={PADDING.left}
             y={HEIGHT - 14}
             textAnchor="start"
             className="fill-text-muted font-mono text-[10px] tabular-nums"
           >
             {new Date(firstPoint.finished_at_unix_ms).toLocaleDateString()}
           </text>
-          {projected.length > 1 && (
+          {ordered.length > 1 && (
             <text
-              x={projected[projected.length - 1].x}
+              x={WIDTH - PADDING.right}
               y={HEIGHT - 14}
               textAnchor="end"
               className="fill-text-muted font-mono text-[10px] tabular-nums"

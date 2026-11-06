@@ -30,6 +30,6 @@ pub use error::DomainError;
 pub use finding::Finding;
 pub use patch::{apply_edits, LineEdit, PatchOutcome, PatchProposal};
 pub use rule::{EvaluationEngine, RuleScope, RuleSpec};
-pub use scan::{ScanMode, ScanSession, ScanSessionSummary};
+pub use scan::{ScanCoverage, ScanMode, ScanSession, ScanSessionSummary, ScanUsage};
 pub use score::{QualityScore, RiskScore};
 pub use severity::Severity;

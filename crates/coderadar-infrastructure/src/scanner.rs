@@ -24,10 +24,12 @@
 //! read, so callers do not have to hold the whole project in memory.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use coderadar_domain::{CodeChunk, DomainError, ScanMode};
+use coderadar_domain::{CodeChunk, DomainError, ScanCoverage, ScanMode};
 use coderadar_usecases::{ChunkSink, ProjectScannerGateway};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
@@ -51,6 +53,97 @@ impl ParallelFileScanner {
     pub fn new() -> Self {
         Self
     }
+
+    /// Stream changed files from an already captured index snapshot.
+    ///
+    /// # Errors
+    /// Returns an error if a captured blob cannot be read or the sink rejects a chunk.
+    pub fn stream_staged_snapshot(
+        &self,
+        snapshot: &crate::git_changeset::StagedSnapshot,
+        sink: &(dyn ChunkSink + 'static),
+    ) -> Result<(), DomainError> {
+        self.stream_staged_snapshot_with_coverage(snapshot, sink)
+            .map(|_| ())
+    }
+
+    /// Stream a captured snapshot and return file-level coverage.
+    ///
+    /// # Errors
+    /// Returns an error if the sink rejects a chunk.
+    pub fn stream_staged_snapshot_with_coverage(
+        &self,
+        snapshot: &crate::git_changeset::StagedSnapshot,
+        sink: &(dyn ChunkSink + 'static),
+    ) -> Result<ScanCoverage, DomainError> {
+        stream_snapshot(snapshot, sink)
+    }
+
+    /// Stream a full project and return file-level coverage.
+    ///
+    /// # Errors
+    /// Returns an error if the root is invalid or the sink rejects a chunk.
+    pub fn stream_project_with_coverage(
+        &self,
+        root_dir: &str,
+        mode: ScanMode,
+        sink: &(dyn ChunkSink + 'static),
+    ) -> Result<ScanCoverage, DomainError> {
+        let root_path = canonical_root(root_dir)?;
+        if mode == ScanMode::StagedDiff {
+            let snapshot = crate::git_changeset::GitChangesetReader::capture_staged(&root_path)?;
+            return stream_snapshot(&snapshot, sink);
+        }
+
+        let root = root_path.as_path();
+        let failed = AtomicBool::new(false);
+        let coverage = Arc::new(Mutex::new(ScanCoverage {
+            exclusions_complete: Some(false),
+            ..ScanCoverage::default()
+        }));
+        let filter_coverage = Arc::clone(&coverage);
+        let mut builder = WalkBuilder::new(root);
+        builder
+            .require_git(false)
+            .hidden(false)
+            .filter_entry(move |entry| {
+                let name = entry.file_name();
+                let excluded = entry.depth() > 0
+                    && (name.to_string_lossy().starts_with('.')
+                        || (entry.file_type().is_some_and(|kind| kind.is_dir())
+                            && IGNORED_DIRECTORY_NAMES
+                                .iter()
+                                .any(|ignored| name == OsStr::new(ignored))));
+                if excluded {
+                    filter_coverage.lock().unwrap().excluded += 1;
+                }
+                !excluded
+            });
+        let walker = builder.build_parallel();
+        walker.run(|| {
+            let mut chunker = Chunker::new();
+            let coverage = &coverage;
+            let failed = &failed;
+            Box::new(move |entry| {
+                match entry {
+                    Ok(entry) => {
+                        if stream_entry(&mut chunker, root, &entry, sink, coverage).is_err() {
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    Err(_) => coverage.lock().unwrap().unreadable += 1,
+                }
+                WalkState::Continue
+            })
+        });
+        if failed.load(Ordering::Relaxed) {
+            return Err(DomainError::External(
+                "chunk sink rejected chunks".to_string(),
+            ));
+        }
+        let result = *coverage.lock().unwrap();
+        Ok(result)
+    }
 }
 
 impl ProjectScannerGateway for ParallelFileScanner {
@@ -60,45 +153,8 @@ impl ProjectScannerGateway for ParallelFileScanner {
         mode: ScanMode,
         sink: &(dyn ChunkSink + 'static),
     ) -> Result<(), DomainError> {
-        let root_path = canonical_root(root_dir)?;
-        if mode == ScanMode::StagedDiff {
-            return stream_staged(&root_path, sink);
-        }
-
-        let root = root_path.as_path();
-        let failed = AtomicBool::new(false);
-        let failed_flag = &failed;
-
-        let mut builder = WalkBuilder::new(root);
-        builder.require_git(false).filter_entry(|entry| {
-            entry.file_type().is_some_and(|file_type| {
-                !file_type.is_dir()
-                    || !IGNORED_DIRECTORY_NAMES
-                        .iter()
-                        .any(|ignored| entry.file_name() == OsStr::new(ignored))
-            })
-        });
-        let walker = builder.build_parallel();
-        walker.run(|| {
-            let mut chunker = Chunker::new();
-            Box::new(move |entry| {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(_) => return WalkState::Continue,
-                };
-                if stream_entry(&mut chunker, root, &entry, sink).is_err() {
-                    failed_flag.store(true, Ordering::Relaxed);
-                }
-                WalkState::Continue
-            })
-        });
-
-        if failed.load(Ordering::Relaxed) {
-            return Err(DomainError::External(
-                "chunk sink rejected chunks".to_string(),
-            ));
-        }
-        Ok(())
+        self.stream_project_with_coverage(root_dir, mode, sink)
+            .map(|_| ())
     }
 }
 
@@ -117,35 +173,62 @@ fn canonical_root(root_dir: &str) -> Result<std::path::PathBuf, DomainError> {
     Ok(root_path)
 }
 
-/// Stream only the files of the staged changeset (`PR-*` scans).
-///
-/// Deleted paths, paths that no longer exist, symlinks that resolve outside
-/// the workspace and non-code files are skipped, exactly like the full walk.
-fn stream_staged(root: &Path, sink: &(dyn ChunkSink + 'static)) -> Result<(), DomainError> {
-    let changeset = crate::git_changeset::GitChangesetReader::read_staged(root)?;
+fn stream_snapshot(
+    snapshot: &crate::git_changeset::StagedSnapshot,
+    sink: &(dyn ChunkSink + 'static),
+) -> Result<ScanCoverage, DomainError> {
     let mut chunker = Chunker::new();
+    let mut coverage = ScanCoverage {
+        exclusions_complete: Some(true),
+        ..ScanCoverage::default()
+    };
 
-    for file in &changeset.files {
-        if file.path.split('/').any(|component| {
-            component.starts_with('.') || IGNORED_DIRECTORY_NAMES.contains(&component)
-        }) {
+    for file in &snapshot.changeset().files {
+        if snapshot.is_ignored(&file.path)
+            || file.path.split('/').any(|component| {
+                component.starts_with('.') || IGNORED_DIRECTORY_NAMES.contains(&component)
+            })
+        {
+            coverage.excluded += 1;
             continue;
         }
-        let candidate = root.join(&file.path);
-        let Ok(canonical) = std::fs::canonicalize(&candidate) else {
-            // Deleted in the index: nothing to analyse.
-            continue;
-        };
-        if !canonical.starts_with(root) || !canonical.is_file() {
+        if snapshot.blob_id(&file.path).is_none() {
+            coverage.excluded += 1;
             continue;
         }
-        let Some(file_name) = canonical.file_name().and_then(OsStr::to_str) else {
+        coverage.discovered += 1;
+        let Some(file_name) = file.path.rsplit('/').next() else {
             continue;
         };
-        stream_file(&mut chunker, root, &canonical, file_name, sink)?;
+        let Some(language) = detect_language(file_name) else {
+            coverage.unsupported += 1;
+            continue;
+        };
+        coverage.supported += 1;
+        let bytes = match snapshot.read_blob(&file.path, MAX_FILE_BYTES) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                coverage.oversized += 1;
+                continue;
+            }
+            Err(_) => {
+                coverage.unreadable += 1;
+                continue;
+            }
+        };
+        let Ok(source) = String::from_utf8(bytes) else {
+            coverage.invalid_encoding += 1;
+            continue;
+        };
+        if too_long(&source) {
+            coverage.oversized += 1;
+            continue;
+        }
+        stream_source(&mut chunker, &file.path, language, &source, sink)?;
+        coverage.incomplete += 1;
     }
 
-    Ok(())
+    Ok(coverage)
 }
 
 /// Stream the chunks of one walked entry.
@@ -159,6 +242,7 @@ fn stream_entry(
     root: &Path,
     entry: &DirEntry,
     sink: &(dyn ChunkSink + 'static),
+    coverage: &Mutex<ScanCoverage>,
 ) -> Result<(), DomainError> {
     let Some(file_type) = entry.file_type() else {
         return Ok(());
@@ -166,10 +250,8 @@ fn stream_entry(
     if !file_type.is_file() {
         return Ok(());
     }
-    let Some(file_name) = entry.file_name().to_str() else {
-        return Ok(());
-    };
-    stream_file(chunker, root, entry.path(), file_name, sink)
+    let file_name = entry.file_name().to_string_lossy();
+    stream_file(chunker, root, entry.path(), &file_name, sink, coverage)
 }
 
 /// Read, guard and chunk one file.
@@ -179,35 +261,63 @@ fn stream_file(
     path: &Path,
     file_name: &str,
     sink: &(dyn ChunkSink + 'static),
+    coverage: &Mutex<ScanCoverage>,
 ) -> Result<(), DomainError> {
+    coverage.lock().unwrap().discovered += 1;
     let Some(language) = detect_language(file_name) else {
+        coverage.lock().unwrap().unsupported += 1;
         return Ok(());
     };
-    let Ok(metadata) = std::fs::metadata(path) else {
+    coverage.lock().unwrap().supported += 1;
+    let Ok(file) = std::fs::File::open(path) else {
+        coverage.lock().unwrap().unreadable += 1;
         return Ok(());
     };
-    if metadata.len() > MAX_FILE_BYTES {
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        coverage.lock().unwrap().unreadable += 1;
         return Ok(());
     }
-    let Ok(bytes) = std::fs::read(path) else {
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        coverage.lock().unwrap().oversized += 1;
         return Ok(());
-    };
+    }
     let Ok(source) = String::from_utf8(bytes) else {
+        coverage.lock().unwrap().invalid_encoding += 1;
         return Ok(());
     };
-    if source
+    if too_long(&source) {
+        coverage.lock().unwrap().oversized += 1;
+        return Ok(());
+    }
+    let file_path = relative_slash_path(root, path);
+    stream_source(chunker, &file_path, language, &source, sink)?;
+    coverage.lock().unwrap().incomplete += 1;
+    Ok(())
+}
+
+fn too_long(source: &str) -> bool {
+    source
         .lines()
         .any(|line| line.chars().count() > MAX_LINE_LENGTH)
-    {
-        return Ok(());
-    }
+}
 
-    let file_path = relative_slash_path(root, path);
+fn stream_source(
+    chunker: &mut Chunker,
+    file_path: &str,
+    language: &str,
+    source: &str,
+    sink: &(dyn ChunkSink + 'static),
+) -> Result<(), DomainError> {
     let line_count = source.lines().count() as u32;
     sink.send_chunk(CodeChunk::file_module(
-        &file_path, language, line_count, &source,
+        file_path, language, line_count, source,
     ))?;
-    for chunk in chunker.chunk(&file_path, language, &source) {
+    for chunk in chunker.chunk(file_path, language, source) {
         sink.send_chunk(chunk)?;
     }
     Ok(())
@@ -274,6 +384,49 @@ mod tests {
         ParallelFileScanner::new()
             .stream_project_chunks(root.to_str().unwrap(), ScanMode::FullScan, sink)
             .unwrap();
+    }
+
+    #[test]
+    fn full_scan_counts_only_observed_exclusions_without_descending() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        write_file(root, ".gitignore", b"*.ts\n!keep.ts\nignored/\n");
+        write_file(root, "keep.ts", CLEAN_TS.as_bytes());
+        write_file(root, "drop.ts", CLEAN_TS.as_bytes());
+        write_file(root, "ignored/a.ts", CLEAN_TS.as_bytes());
+        write_file(root, "ignored/nested/b.ts", CLEAN_TS.as_bytes());
+        let sink = CollectingChunkSink::new();
+        let coverage = ParallelFileScanner::new()
+            .stream_project_with_coverage(root.to_str().unwrap(), ScanMode::FullScan, &sink)
+            .unwrap();
+        assert_eq!(coverage.discovered, 1);
+        assert_eq!(coverage.excluded, 1); // Only .gitignore was observed by the filter.
+        let files: BTreeSet<String> = sink.drain().into_iter().map(|c| c.file_path).collect();
+        assert_eq!(files, BTreeSet::from(["keep.ts".to_string()]));
+    }
+
+    #[test]
+    fn full_scan_does_not_infer_nested_ignore_exclusions() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        write_file(
+            root,
+            ".gitignore",
+            b"*.ts\n!src/\nnode_modules/\n.hidden.ts\n",
+        );
+        write_file(root, "src/.gitignore", b"!keep.ts\n");
+        write_file(root, "src/keep.ts", CLEAN_TS.as_bytes());
+        write_file(root, "src/drop.ts", CLEAN_TS.as_bytes());
+        write_file(root, "node_modules/dep.ts", CLEAN_TS.as_bytes());
+        write_file(root, ".hidden.ts", CLEAN_TS.as_bytes());
+        let sink = CollectingChunkSink::new();
+        let coverage = ParallelFileScanner::new()
+            .stream_project_with_coverage(root.to_str().unwrap(), ScanMode::FullScan, &sink)
+            .unwrap();
+        assert_eq!(coverage.discovered, 1);
+        assert_eq!(coverage.excluded, 2); // The two .gitignore files were observed.
+        let files: BTreeSet<String> = sink.drain().into_iter().map(|c| c.file_path).collect();
+        assert_eq!(files, BTreeSet::from(["src/keep.ts".to_string()]));
     }
 
     #[test]

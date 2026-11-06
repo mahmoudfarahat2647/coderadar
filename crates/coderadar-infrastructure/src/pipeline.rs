@@ -17,6 +17,7 @@
 //! the code findings and the Pull Request hygiene scorecard.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,9 +26,7 @@ use coderadar_domain::{
     ChunkKind, CodeChunk, DomainError, EvaluationEngine, Finding, PullRequestHygiene, RuleScope,
     RuleSpec, ScanMode, ScanSession,
 };
-use coderadar_usecases::{
-    AssessPullRequest, ChangesetGateway, ChunkSink, ProjectScannerGateway, SemanticRuleEvaluator,
-};
+use coderadar_usecases::{AssessPullRequest, ChangesetGateway, ChunkSink, SemanticRuleEvaluator};
 
 use crate::executor::block_on;
 use crate::scanner::ParallelFileScanner;
@@ -71,6 +70,8 @@ struct SinkState {
     findings: Vec<Finding>,
     suppressed: usize,
     error: Option<DomainError>,
+    sources: BTreeMap<String, String>,
+    unverified_results: bool,
 }
 
 /// Callback invoked with batches of findings as they are evaluated.
@@ -89,8 +90,8 @@ struct BatchingSink {
     module_rules: Arc<[RuleSpec]>,
     ast_batch_size: usize,
     module_batch_size: usize,
-    finding_sink: Option<FindingBatchCallback>,
     state: Mutex<SinkState>,
+    provisional: Option<FindingBatchCallback>,
 }
 
 impl BatchingSink {
@@ -100,7 +101,7 @@ impl BatchingSink {
         module_rules: Vec<RuleSpec>,
         ast_batch_size: usize,
         module_batch_size: usize,
-        finding_sink: Option<FindingBatchCallback>,
+        provisional: Option<FindingBatchCallback>,
     ) -> Self {
         Self {
             evaluator,
@@ -108,8 +109,8 @@ impl BatchingSink {
             module_rules: module_rules.into(),
             ast_batch_size,
             module_batch_size,
-            finding_sink,
             state: Mutex::new(SinkState::default()),
+            provisional,
         }
     }
 
@@ -120,8 +121,24 @@ impl BatchingSink {
         &self,
         batch: Vec<CodeChunk>,
         rules: &[RuleSpec],
-    ) -> Result<(Vec<Finding>, usize), DomainError> {
+    ) -> Result<(Vec<Finding>, usize, bool), DomainError> {
         let results = block_on(self.evaluator.evaluate_batch(batch, rules))?;
+        let mut expected = BTreeMap::new();
+        for rule in rules {
+            *expected.entry(rule.id.as_str()).or_insert(0usize) += 1;
+        }
+        let mut unverified = false;
+        for result in &results {
+            match expected.get_mut(result.rule_id.as_str()) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => unverified = true,
+            }
+        }
+        if expected.values().any(|count| *count != 0) {
+            return Err(DomainError::invariant(
+                "evaluator omitted a requested rule result",
+            ));
+        }
         let mut findings = Vec::new();
         let mut suppressed = 0;
         for result in results {
@@ -137,7 +154,7 @@ impl BatchingSink {
                 }
             }
         }
-        Ok((findings, suppressed))
+        Ok((findings, suppressed, unverified))
     }
 
     /// Take and evaluate whatever remains buffered (end of the walk).
@@ -152,27 +169,31 @@ impl BatchingSink {
 
         let mut findings = Vec::new();
         let mut suppressed_total = 0;
+        let mut unverified = false;
         if !ast_batch.is_empty() {
-            let (batch_findings, suppressed) = self.evaluate_chunks(ast_batch, &self.ast_rules)?;
+            let (batch_findings, suppressed, extra) =
+                self.evaluate_chunks(ast_batch, &self.ast_rules)?;
+            unverified |= extra;
             findings.extend(batch_findings);
             suppressed_total += suppressed;
         }
         if !module_batch.is_empty() {
-            let (batch_findings, suppressed) =
+            let (batch_findings, suppressed, extra) =
                 self.evaluate_chunks(module_batch, &self.module_rules)?;
+            unverified |= extra;
             findings.extend(batch_findings);
             suppressed_total += suppressed;
         }
 
-        if let Some(sink) = &self.finding_sink {
+        if let Some(callback) = &self.provisional {
             if !findings.is_empty() {
-                sink(&findings);
+                callback(&findings);
             }
         }
-
         let mut state = self.lock_state()?;
         state.findings.extend(findings);
         state.suppressed += suppressed_total;
+        state.unverified_results |= unverified;
         Ok(())
     }
 
@@ -207,6 +228,10 @@ impl ChunkSink for BatchingSink {
             }
             ChunkKind::FileModule => {
                 state.module_chunks += 1;
+                state.sources.insert(
+                    chunk.file_path.clone(),
+                    crate::hashing::sha256_hex(&chunk.content),
+                );
                 state.module_buf.push(chunk);
                 if state.module_buf.len() < self.module_batch_size {
                     return Ok(());
@@ -216,14 +241,15 @@ impl ChunkSink for BatchingSink {
         };
 
         match self.evaluate_chunks(batch, rules) {
-            Ok((findings, suppressed)) => {
-                if let Some(sink) = &self.finding_sink {
+            Ok((findings, suppressed, unverified)) => {
+                if let Some(callback) = &self.provisional {
                     if !findings.is_empty() {
-                        sink(&findings);
+                        callback(&findings);
                     }
                 }
                 state.findings.extend(findings);
                 state.suppressed += suppressed;
+                state.unverified_results |= unverified;
                 Ok(())
             }
             Err(error) => {
@@ -241,6 +267,8 @@ pub struct ScanPipeline {
     ast_batch_size: usize,
     module_batch_size: usize,
     changesets: Option<Arc<dyn ChangesetGateway>>,
+    staged_snapshot: Option<Arc<crate::git_changeset::StagedSnapshot>>,
+    configuration_fingerprint: Option<Result<Option<String>, ()>>,
 }
 
 impl ScanPipeline {
@@ -257,13 +285,35 @@ impl ScanPipeline {
             ast_batch_size: Self::DEFAULT_AST_BATCH_SIZE,
             module_batch_size: Self::DEFAULT_MODULE_BATCH_SIZE,
             changesets: None,
+            staged_snapshot: None,
+            configuration_fingerprint: None,
         }
     }
 
-    /// Attach the Git changeset gateway used by a `StagedDiff` run.
+    pub(crate) fn with_configuration_fingerprint(
+        mut self,
+        fingerprint: Option<Result<Option<String>, ()>>,
+    ) -> Self {
+        self.configuration_fingerprint = fingerprint;
+        self
+    }
+
+    /// Enable staged scans. The captured Git snapshot itself supplies the
+    /// changeset so that hygiene and source analysis observe the same index.
+    /// The supplied gateway is retained as a compatibility capability marker.
     #[must_use]
     pub fn with_changeset_gateway(mut self, gateway: Arc<dyn ChangesetGateway>) -> Self {
         self.changesets = Some(gateway);
+        self
+    }
+
+    /// Use an already captured index for staged source and changeset analysis.
+    #[must_use]
+    pub fn with_staged_snapshot(
+        mut self,
+        snapshot: Arc<crate::git_changeset::StagedSnapshot>,
+    ) -> Self {
+        self.staged_snapshot = Some(snapshot);
         self
     }
 
@@ -274,7 +324,7 @@ impl ScanPipeline {
         self
     }
 
-    /// Run a full scan of `root`, notifying `on_findings` as each batch evaluates.
+    /// Run a full scan of `root`, publishing findings after source verification.
     ///
     /// # Errors
     /// Returns [`DomainError`] when the root is invalid or an evaluator fails.
@@ -286,10 +336,10 @@ impl ScanPipeline {
     where
         F: Fn(&[Finding]) + Send + Sync + 'static,
     {
-        self.run_internal(root, ScanMode::FullScan, Some(Arc::new(on_findings)))
+        self.run_internal(root, ScanMode::FullScan, Some(Arc::new(on_findings)), None)
     }
 
-    /// Run a full scan of `root`, notifying `on_findings` for each streamed batch.
+    /// Run a full scan of `root` without a findings callback.
     ///
     /// `git_changeset`-scoped rules are excluded from a `FullScan`: they need
     /// the Git diff of the changeset, which the pipeline only reads for a
@@ -298,10 +348,10 @@ impl ScanPipeline {
     /// # Errors
     /// Returns [`DomainError`] when the root is invalid or an evaluator fails.
     pub fn run(&self, root: &Path) -> Result<ScanOutcome, DomainError> {
-        self.run_internal(root, ScanMode::FullScan, None)
+        self.run_internal(root, ScanMode::FullScan, None, None)
     }
 
-    /// Run a scan of `root` in `mode`, notifying `on_findings` per batch.
+    /// Run a scan of `root` in `mode`, publishing findings after source verification.
     ///
     /// # Errors
     /// Returns [`DomainError`] when the root is invalid, no changeset gateway
@@ -316,7 +366,23 @@ impl ScanPipeline {
     where
         F: Fn(&[Finding]) + Send + Sync + 'static,
     {
-        self.run_internal(root, mode, Some(Arc::new(on_findings)))
+        self.run_internal(root, mode, Some(Arc::new(on_findings)), None)
+    }
+
+    /// Run a scan with unverified interim findings. The returned outcome is authoritative.
+    ///
+    /// # Errors
+    /// Returns an error if the scan cannot be completed.
+    pub fn run_mode_with_provisional_callback<F>(
+        &self,
+        root: &Path,
+        mode: ScanMode,
+        callback: F,
+    ) -> Result<ScanOutcome, DomainError>
+    where
+        F: Fn(&[Finding]) + Send + Sync + 'static,
+    {
+        self.run_internal(root, mode, None, Some(Arc::new(callback)))
     }
 
     /// Run a scan of `root` in `mode`.
@@ -326,7 +392,7 @@ impl ScanPipeline {
     /// is configured for a `StagedDiff` run, the Git changeset cannot be read,
     /// or an evaluator fails.
     pub fn run_mode(&self, root: &Path, mode: ScanMode) -> Result<ScanOutcome, DomainError> {
-        self.run_internal(root, mode, None)
+        self.run_internal(root, mode, None, None)
     }
 
     fn run_internal(
@@ -334,9 +400,13 @@ impl ScanPipeline {
         root: &Path,
         mode: ScanMode,
         finding_sink: Option<FindingBatchCallback>,
+        provisional: Option<FindingBatchCallback>,
     ) -> Result<ScanOutcome, DomainError> {
         let started_ms = now_ms();
-        if mode == ScanMode::StagedDiff && self.changesets.is_none() {
+        if mode == ScanMode::StagedDiff
+            && self.changesets.is_none()
+            && self.staged_snapshot.is_none()
+        {
             return Err(DomainError::invariant(
                 "a staged scan requires a configured Git changeset gateway",
             ));
@@ -361,11 +431,32 @@ impl ScanPipeline {
             module_rules,
             self.ast_batch_size,
             self.module_batch_size,
-            finding_sink,
+            provisional,
         );
 
         let root_str = root.to_string_lossy().to_string();
-        let scan_result = ParallelFileScanner::new().stream_project_chunks(&root_str, mode, &sink);
+        let snapshot = if mode == ScanMode::StagedDiff {
+            let snapshot = match &self.staged_snapshot {
+                Some(snapshot) => Arc::clone(snapshot),
+                None => Arc::new(crate::git_changeset::GitChangesetReader::capture_staged(
+                    root,
+                )?),
+            };
+            if !snapshot.belongs_to(root)? {
+                return Err(DomainError::invariant(
+                    "captured index belongs to a different repository",
+                ));
+            }
+            Some(snapshot)
+        } else {
+            None
+        };
+        let scanner = ParallelFileScanner::new();
+        let scan_result = if let Some(snapshot) = &snapshot {
+            scanner.stream_staged_snapshot_with_coverage(snapshot, &sink)
+        } else {
+            scanner.stream_project_with_coverage(&root_str, mode, &sink)
+        };
 
         // The scanner collapses every sink failure into a generic external
         // error, so the engine's real error must be read from the sink first.
@@ -375,31 +466,95 @@ impl ScanPipeline {
                 return Err(error);
             }
         }
-        scan_result?;
+        let mut coverage = scan_result?;
 
         sink.flush()?;
+        coverage.analyzed += coverage.incomplete;
+        coverage.incomplete = 0;
 
-        let (ast_chunks, module_chunks, suppressed, buffered) = {
+        let (ast_chunks, module_chunks, suppressed, mut buffered, mut sources, mut unverified) = {
             let mut state = sink.lock_state()?;
             (
                 state.ast_chunks,
                 state.module_chunks,
                 state.suppressed,
                 std::mem::take(&mut state.findings),
+                std::mem::take(&mut state.sources),
+                state.unverified_results,
             )
         };
 
-        let mut pull_request = None;
-        let mut all_findings = buffered;
-        if mode == ScanMode::StagedDiff {
-            let gateway = self.changesets.as_ref().ok_or_else(|| {
-                DomainError::invariant("a staged scan requires a configured Git changeset gateway")
+        let consumed_sources = sources.clone();
+        if mode == ScanMode::FullScan {
+            let canonical_root = std::fs::canonicalize(root).map_err(|error| {
+                DomainError::External(format!("cannot verify scan root: {error}"))
             })?;
-            let assessment = block_on(
-                AssessPullRequest::new(Arc::clone(gateway)).assess(&root_str, &self.rules),
-            )?;
+            sources.retain(|path, expected| {
+                let path = canonical_root.join(path);
+                let matches = std::fs::canonicalize(&path)
+                    .ok()
+                    .filter(|resolved| resolved.starts_with(&canonical_root))
+                    .and_then(|resolved| std::fs::File::open(resolved).ok())
+                    .and_then(|file| {
+                        let mut bytes = Vec::new();
+                        file.take(crate::scanner::MAX_FILE_BYTES + 1)
+                            .read_to_end(&mut bytes)
+                            .ok()?;
+                        Some(
+                            bytes.len() as u64 <= crate::scanner::MAX_FILE_BYTES
+                                && crate::hashing::sha256_hex_bytes(&bytes) == *expected,
+                        )
+                    })
+                    .unwrap_or(false);
+                if !matches {
+                    coverage.analyzed -= 1;
+                    coverage.incomplete += 1;
+                }
+                matches
+            });
+            buffered.retain(|finding| {
+                !consumed_sources.contains_key(&finding.file_path)
+                    || sources.contains_key(&finding.file_path)
+            });
+        }
+        unverified |= buffered
+            .iter()
+            .any(|finding| !consumed_sources.contains_key(&finding.file_path));
+        if mode == ScanMode::FullScan {
+            if let Some(expected) = &self.configuration_fingerprint {
+                unverified |= expected.is_err()
+                    || crate::layer_map::configuration_fingerprint(root) != *expected;
+            }
+        }
+        // Invalid evaluator output or changed policy invalidates the scan's
+        // evidence conservatively; unknown metadata is for legacy rows (§2–3).
+        if unverified || crate::engine_rules::validate_ownership(&self.rules).is_err() {
+            coverage.incomplete += coverage.analyzed;
+            coverage.analyzed = 0;
+            sources.clear();
+            buffered.clear();
+        }
+        buffered.retain(|finding| sources.contains_key(&finding.file_path));
+
+        let mut pull_request = None;
+        let mut all_findings = buffered.clone();
+        if let Some(snapshot) = snapshot {
+            let gateway: Arc<dyn ChangesetGateway> = snapshot;
+            let assessment =
+                block_on(AssessPullRequest::new(gateway).assess(&root_str, &self.rules))?;
             all_findings.extend(assessment.findings);
             pull_request = Some(assessment.hygiene);
+        }
+
+        if let Some(callback) = finding_sink {
+            let verified: Vec<_> = buffered
+                .iter()
+                .filter(|finding| sources.contains_key(&finding.file_path))
+                .cloned()
+                .collect();
+            if !verified.is_empty() {
+                callback(&verified);
+            }
         }
 
         let mut deduped: BTreeMap<String, Finding> = BTreeMap::new();
@@ -427,8 +582,22 @@ impl ScanPipeline {
         let root_dir = crate::workspace_guard::canonical_root(root);
         let mut session =
             ScanSession::new(format!("scan-{started_ms}"), root_dir, mode, started_ms)
-                .with_files_scanned(module_chunks)
+                .with_files_scanned(coverage.analyzed)
                 .with_suppressed_heuristic_findings(suppressed);
+        session.coverage = Some(coverage);
+        session.completion = if coverage.incomplete > 0
+            || coverage.unreadable > 0
+            || coverage.oversized > 0
+            || coverage.invalid_encoding > 0
+            || unverified
+            || crate::engine_rules::validate_ownership(&self.rules).is_err()
+        {
+            Some("partial".to_string())
+        } else {
+            Some("complete".to_string())
+        };
+        session.analyzed_sources = Some(sources);
+        session.consumed_sources = Some(consumed_sources);
         for finding in findings {
             session.push(finding);
         }
@@ -436,7 +605,7 @@ impl ScanPipeline {
 
         Ok(ScanOutcome {
             session,
-            files_scanned: module_chunks,
+            files_scanned: coverage.analyzed,
             ast_chunks,
             module_chunks,
             pull_request,
@@ -570,5 +739,42 @@ mod tests {
         let error = pipeline.run(&missing).expect_err("missing root fails");
 
         assert!(matches!(error, DomainError::NotFound(_)), "got {error:?}");
+    }
+
+    #[test]
+    fn staged_configuration_and_sources_share_the_captured_index() {
+        use coderadar_domain::ScanMode;
+        use git2::Repository;
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let repo = Repository::init(root).unwrap();
+        write(
+            root,
+            ".coderadar.json",
+            r#"{"layers":{"domain":["custom/**"]}}"#,
+        );
+        write(root, "custom/a.ts", "import express from 'express';\n");
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(".coderadar.json")).unwrap();
+        index.add_path(Path::new("custom/a.ts")).unwrap();
+        index.write().unwrap();
+        let snapshot =
+            Arc::new(crate::git_changeset::GitChangesetReader::capture_staged(root).unwrap());
+        write(root, ".coderadar.json", r#"{"layers":{"domain":[]}}"#);
+        index.add_path(Path::new(".coderadar.json")).unwrap();
+        index.write().unwrap();
+        let map = LayerMap::load_staged(&snapshot).unwrap();
+        let manifest = RuleManifest::embedded().unwrap();
+        let pipeline = ScanPipeline::new(
+            Arc::new(RuleEngineRouter::new(Arc::new(map))),
+            manifest.rules.clone(),
+        )
+        .with_staged_snapshot(snapshot);
+        let outcome = pipeline.run_mode(root, ScanMode::StagedDiff).unwrap();
+        assert!(outcome
+            .session
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "ARCH-DEP-001" && f.file_path == "custom/a.ts"));
     }
 }

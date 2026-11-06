@@ -25,6 +25,7 @@ mod layer_map;
 mod mock;
 mod patching;
 mod pipeline;
+mod provider_diagnostics;
 mod redaction;
 mod report;
 mod router;
@@ -40,12 +41,16 @@ mod workspace_guard;
 
 pub use chunker::{detect_language, Chunker, JAVASCRIPT, TYPESCRIPT};
 pub use composition::{
-    scan_project, scan_project_mode, scan_project_streaming, scan_project_streaming_with,
-    scan_project_streaming_with_history, scan_project_streaming_with_history_mode,
-    scan_project_streaming_with_mode, scan_project_with, scan_project_with_mode,
+    scan_project, scan_project_mode, scan_project_provisional_with_engine_history_status,
+    scan_project_streaming, scan_project_streaming_with,
+    scan_project_streaming_with_engine_history_mode,
+    scan_project_streaming_with_engine_history_status, scan_project_streaming_with_history,
+    scan_project_streaming_with_history_mode, scan_project_streaming_with_mode, scan_project_with,
+    scan_project_with_engine, scan_project_with_engine_mode, scan_project_with_mode,
 };
 pub use engine::{
-    EngineMode, EngineStatus, EngineStatusSnapshot, FallbackRuleEvaluator, SemanticEngine,
+    EngineMode, EngineStatus, EngineStatusSnapshot, FallbackRuleEvaluator, ScanEngineUsage,
+    ScanEngineUsageSnapshot, SemanticEngine, DEFAULT_METADATA_ENDPOINT,
 };
 pub use engine_rules::{is_semantic_rule, GIT_CHANGESET_IDS, TIER0_OWNED_IDS};
 pub use executor::block_on;
@@ -70,6 +75,7 @@ pub use layer_map::{LayerMap, LayerMapSource, ProjectLayer};
 pub use mock::MockRuleEvaluator;
 pub use patching::SafePatchApplier;
 pub use pipeline::{FindingBatchCallback, ScanOutcome, ScanPipeline};
+pub use provider_diagnostics::{JevDiagnostics, ProviderDiagnostic, ProviderState};
 pub use redaction::{redact_chunk, redact_source, REDACTED_SECRET};
 pub use report::{
     FindingReport, ScanReport, ScanStatsReport, SessionReport, SeverityTotals, ToolInfo,

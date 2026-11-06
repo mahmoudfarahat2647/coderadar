@@ -34,7 +34,7 @@ export interface TrendScale {
 }
 
 interface ComplianceSample {
-  compliance_percent: number;
+  compliance_percent: number | null;
 }
 
 /** Rounds to two decimals so the emitted SVG strings stay readable. */
@@ -75,16 +75,28 @@ export function trendPoints(
   const { scale, plotWidth } = buildTrendScale(width, height, padding);
   const count = points.length;
 
-  return points.map((point, index) => {
+  return points.flatMap((point, index) => {
+    if (point.compliance_percent == null) return [];
     const ratio = count > 1 ? index / (count - 1) : 0.5;
     const x = padding.left + ratio * plotWidth;
-    return {
+    return [{
       x: round2(x),
       y: round2(scale(point.compliance_percent)),
       value: point.compliance_percent,
       index,
-    };
+    }];
   });
+}
+
+/** Separate contiguous runs so missing scores never create a misleading line. */
+export function trendSegments(points: TrendPoint[]): TrendPoint[][] {
+  const segments: TrendPoint[][] = [];
+  for (const point of points) {
+    const last = segments[segments.length - 1];
+    if (!last || last[last.length - 1].index + 1 !== point.index) segments.push([point]);
+    else last.push(point);
+  }
+  return segments;
 }
 
 /**
@@ -101,6 +113,6 @@ export function trendPolyline(points: TrendPoint[]): string {
  * `null` when fewer than two samples are available.
  */
 export function trendDelta(points: ComplianceSample[]): number | null {
-  if (points.length < 2) return null;
-  return points[points.length - 1].compliance_percent - points[0].compliance_percent;
+  if (points.length < 2 || points.some((point) => point.compliance_percent == null)) return null;
+  return points[points.length - 1].compliance_percent! - points[0].compliance_percent!;
 }

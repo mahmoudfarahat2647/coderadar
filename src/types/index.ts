@@ -12,7 +12,7 @@ export type FindingCategory =
   | "performance"
   | "pull_requests";
 
-export type FindingEngine = "tier0" | "tier1" | "mock";
+export type FindingEngine = "tier0" | "tier1" | "mock" | "unknown";
 
 export interface FindingDTO {
   id: string;
@@ -26,7 +26,9 @@ export interface FindingDTO {
   title: string;
   description: string;
   engine: FindingEngine;
-  confidence: number;
+  confidence: number | null;
+  model_probability?: number | null;
+  heuristic_weight?: number | null;
   radar_r: number;
   radar_theta: number;
   resolved?: boolean;
@@ -52,6 +54,9 @@ export interface ScanStats {
   ast_chunks: number;
   module_chunks: number;
   duration_ms: number;
+  compliance_percent: number | null;
+  completion: string | null;
+  coverage: ScanCoverage | null;
   /** Heuristic findings dropped by the 0.5 confidence floor. */
   suppressed_heuristic_findings: number;
 }
@@ -74,7 +79,20 @@ export interface PrHygieneReport {
   missing_tests: boolean;
 }
 
+export interface ScanUsage {
+  primary_batches: number;
+  fallback_batches: number;
+  fallback_failures: number;
+}
+
+export interface ScanProvenance {
+  engine_mode: string | null;
+  usage?: ScanUsage | null;
+}
+
 export interface ScanReport {
+  history_status?: "saved" | "in_memory" | "save_failed";
+  schema_version: number;
   tool: {
     name: string;
     version: string;
@@ -82,11 +100,10 @@ export interface ScanReport {
   ruleset_version: string;
   layer_map_source: string;
   scan: ScanStats;
-  session: {
+  session: ScanProvenance & {
     id: string;
     root_dir: string;
     mode: string;
-    engine_mode: "mock" | "jev" | "mock_fallback" | null;
     started_at_unix_ms: number;
     finished_at_unix_ms?: number;
     totals: SeverityTotals;
@@ -107,7 +124,6 @@ export interface EngineStatus {
   max_latency_ms: number;
   total_latency_ms: number;
   api_key_configured: boolean;
-  api_key_masked?: string | null;
   tier0_rules_count: number;
   semantic_rules_count: number;
   total_rules: number;
@@ -204,8 +220,31 @@ export interface HistoryPointDTO {
   /** Heuristic findings dropped by the 0.5 confidence floor. */
   suppressed_heuristic_findings: number;
   /** Engine label: `mock` | `jev` | `mock_fallback`. */
-  engine_mode: "mock" | "jev" | "mock_fallback" | null;
-  compliance_percent: number;
+  engine_mode: string | null;
+  usage?: ScanUsage | null;
+  compliance_percent: number | null;
+  coverage: ScanCoverage | null;
+  completion: string | null;
+}
+
+export type ProviderState = "not_configured" | "configured_untested" | "available" | "unauthorized" | "forbidden" | "quota_blocked" | "rate_limited" | "unreachable" | "protocol_incompatible";
+
+export interface ProviderDiagnostic {
+  state: ProviderState;
+  checked_at_unix_secs: number | null;
+}
+
+export interface ScanCoverage {
+  discovered: number;
+  supported: number;
+  analyzed: number;
+  unsupported: number;
+  excluded: number;
+  exclusions_complete?: boolean | null;
+  unreadable: number;
+  oversized: number;
+  invalid_encoding: number;
+  incomplete: number;
 }
 
 /** Phase 7 — Markdown report export (FR-07). */
@@ -229,6 +268,7 @@ export interface Tier2StatusDTO {
 
 export interface Tier2FixRequestDTO {
   root_path: string;
+  finding_id: string;
   file_path: string;
   rule_id: string;
   title: string;

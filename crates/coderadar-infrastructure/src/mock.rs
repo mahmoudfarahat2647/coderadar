@@ -43,7 +43,7 @@ use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
 use regex::Regex;
 
 use crate::engine_rules::{GIT_CHANGESET_IDS, TIER0_OWNED_IDS};
-use crate::heuristics::{build_finding, chunk_lines};
+use crate::heuristics::{build_finding, chunk_lines, local_module_findings};
 
 /// Minimum chunk length (lines) before `ARCH-SRP-002` may flag a class.
 const SRP_MIN_LINES: u32 = 200;
@@ -63,8 +63,6 @@ const DESC_SRP: &str =
     "Heuristic: oversized class mixing concern groups (Mock engine — verify before acting)";
 const DESC_DIP: &str =
     "Heuristic: inner layer instantiates a concrete adapter (Mock engine — verify before acting)";
-const DESC_BND: &str =
-    "Heuristic: route handler returns a domain entity (Mock engine — verify before acting)";
 const DESC_NPE: &str =
     "Heuristic: unguarded access on a possibly-null value (Mock engine — verify before acting)";
 const DESC_PRM_THEN: &str =
@@ -77,8 +75,6 @@ const DESC_TMO: &str =
     "Heuristic: network call without timeout or abort signal (Mock engine — verify before acting)";
 const DESC_NPO: &str =
     "Heuristic: database call inside a loop (Mock engine — verify before acting)";
-const DESC_HDL: &str =
-    "Heuristic: handle opened without a guaranteed release (Mock engine — verify before acting)";
 const DESC_EVT_ADD: &str =
     "Heuristic: event listener without a matching removal (Mock engine — verify before acting)";
 const DESC_EVT_EFFECT: &str =
@@ -147,17 +143,6 @@ static CONCRETE_INSTANTIATION_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid concrete instantiation regex")
 });
 
-/// `ARCH-BND-004`: HTTP boundary files.
-static BOUNDARY_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:controller|route|handler|\bapi\b)").expect("valid boundary file regex")
-});
-
-/// `ARCH-BND-004`: a route handler responding with a domain entity or model.
-static ENTITY_RESPONSE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"res\.(?:json|send)\(\s*\w*(?:Entity|Model|Aggregate)\w*\b")
-        .expect("valid entity response regex")
-});
-
 /// `EDGE-NPE-001`: nested request-property access.
 static REQUEST_PROPERTY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\breq\.(?:body|query|params)\.\w+\.\w+").expect("valid request property regex")
@@ -206,12 +191,6 @@ static LOOP_RE: LazyLock<Regex> = LazyLock::new(|| {
 static DB_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\.(?:query|findById|findUnique|findMany|findOne|save|insert)\(|prisma\.|knex\(")
         .expect("valid db call regex")
-});
-
-/// `PERF-HDL-002`: handle-opening calls.
-static HANDLE_OPEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:fs\.open|openSync|createConnection|getConnection|createClient)\(")
-        .expect("valid handle open regex")
 });
 
 /// `PERF-EVT-003`: listener registration.
@@ -386,14 +365,6 @@ fn architecture_dip(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
     })
 }
 
-/// `ARCH-BND-004`: domain entities serialized straight out of a route handler.
-fn architecture_boundary(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
-    scan_chunk_lines(rule, chunks, ChunkKind::FileModule, |chunk, _line, text| {
-        (BOUNDARY_FILE_RE.is_match(&chunk.file_path) && ENTITY_RESPONSE_RE.is_match(text))
-            .then_some((DESC_BND, 0.6))
-    })
-}
-
 /// `EDGE-NPE-001`: property access chained onto a possibly-null value.
 fn edge_npe(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
     scan_chunk_lines(rule, chunks, ChunkKind::AstWindow, |_chunk, _line, text| {
@@ -500,24 +471,6 @@ fn brace_delta(text: &str) -> i64 {
     text.matches('{').count() as i64 - text.matches('}').count() as i64
 }
 
-/// `PERF-HDL-002`: handles opened without a guaranteed release clause.
-fn performance_handle(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
-    scan_chunk_lines_ctx(
-        rule,
-        chunks,
-        ChunkKind::FileModule,
-        |chunk| {
-            chunk.content.contains(".close(")
-                || chunk.content.contains(".end(")
-                || chunk.content.contains(".release(")
-                || chunk.content.contains("finally")
-        },
-        |released, _chunk, _line, text| {
-            (!*released && HANDLE_OPEN_RE.is_match(text)).then_some((DESC_HDL, 0.6))
-        },
-    )
-}
-
 /// `PERF-EVT-003`: listeners and effects that are never detached.
 ///
 /// A chunk that carries a `removeEventListener` or an effect cleanup return
@@ -578,13 +531,13 @@ impl MockRuleEvaluator {
             "SEC-XSS-004" => security_xss(rule, chunks),
             "ARCH-SRP-002" => architecture_srp(rule, chunks),
             "ARCH-DIP-003" => architecture_dip(rule, chunks),
-            "ARCH-BND-004" => architecture_boundary(rule, chunks),
+            "ARCH-BND-004" => local_module_findings(rule, chunks),
             "EDGE-NPE-001" => edge_npe(rule, chunks),
             "EDGE-PRM-002" => edge_promise(rule, chunks),
             "EDGE-BND-003" => edge_bounds(rule, chunks),
             "EDGE-TMO-004" => edge_timeout(rule, chunks),
             "PERF-NPO-001" => performance_n_plus_one(rule, chunks),
-            "PERF-HDL-002" => performance_handle(rule, chunks),
+            "PERF-HDL-002" => local_module_findings(rule, chunks),
             "PERF-EVT-003" => performance_events(rule, chunks),
             _ => Vec::new(),
         }
@@ -606,7 +559,12 @@ impl SemanticRuleEvaluator for MockRuleEvaluator {
                 .map(|rule| {
                     let findings = Self::evaluate_rule(rule, &chunks)
                         .into_iter()
-                        .map(|finding| finding.with_engine(EvaluationEngine::MockHeuristic))
+                        .map(|finding| {
+                            let weight = finding.confidence;
+                            finding
+                                .with_heuristic_weight(weight)
+                                .with_engine(EvaluationEngine::MockHeuristic)
+                        })
                         .collect();
                     RuleEvaluationResult::new(
                         rule.id.clone(),
@@ -652,6 +610,8 @@ mod tests {
     ) {
         assert_eq!(findings.len(), 1, "expected one finding, got {findings:#?}");
         let finding = &findings[0];
+        assert_eq!(finding.model_probability, None);
+        assert_eq!(finding.heuristic_weight, Some(confidence));
         assert_eq!(finding.rule_id, rule_id);
         assert_eq!(finding.file_path, file_path);
         assert_eq!(finding.line_start, line);

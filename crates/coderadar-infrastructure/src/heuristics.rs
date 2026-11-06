@@ -5,7 +5,55 @@
 //! semantics: severity, category, CWE and title always come from the ruleset
 //! manifest, never from the heuristic itself.
 
-use coderadar_domain::{CodeChunk, Finding, RiskScore, RuleSpec};
+use coderadar_domain::{ChunkKind, CodeChunk, Finding, RiskScore, RuleSpec};
+use regex::Regex;
+use std::sync::LazyLock;
+
+static BOUNDARY_FILE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:controller|route|handler|\bapi\b)").expect("valid boundary regex")
+});
+static ENTITY_RESPONSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"res\.(?:json|send)\(\s*\w*(?:Entity|Model|Aggregate)\w*\b")
+        .expect("valid response regex")
+});
+static HANDLE_OPEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:fs\.open|openSync|createConnection|getConnection|createClient)\(")
+        .expect("valid handle regex")
+});
+
+/// Shared file/module heuristic detectors, preserving the Mock confidence weights.
+pub(crate) fn local_module_findings(rule: &RuleSpec, chunks: &[CodeChunk]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for chunk in chunks
+        .iter()
+        .filter(|chunk| chunk.kind == ChunkKind::FileModule)
+    {
+        let relevant = match rule.id.as_str() {
+            "ARCH-BND-004" => BOUNDARY_FILE.is_match(&chunk.file_path),
+            "PERF-HDL-002" => ![".close(", ".end(", ".release(", "finally"]
+                .iter()
+                .any(|s| chunk.content.contains(s)),
+            _ => false,
+        };
+        if !relevant {
+            continue;
+        }
+        for (line, text) in chunk_lines(chunk) {
+            let description = match rule.id.as_str() {
+                "ARCH-BND-004" if ENTITY_RESPONSE.is_match(text) => Some("Heuristic: route handler returns a domain entity (local heuristic — verify before acting)"),
+                "PERF-HDL-002" if HANDLE_OPEN.is_match(text) => Some("Heuristic: handle opened without a guaranteed release (local heuristic — verify before acting)"),
+                _ => None,
+            };
+            if let Some(description) = description {
+                findings.push(
+                    build_finding(rule, &chunk.file_path, line, line, description, 0.6)
+                        .with_heuristic_weight(0.6),
+                );
+            }
+        }
+    }
+    findings
+}
 
 /// Build a finding whose rule metadata (severity, category, CWE, title) is
 /// taken from the manifest-backed [`RuleSpec`].

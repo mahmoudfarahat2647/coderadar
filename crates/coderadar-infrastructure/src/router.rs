@@ -1,16 +1,14 @@
 //! Rule engine router — one [`SemanticRuleEvaluator`] over both engines.
 //!
-//! Splits an incoming rule batch between [`Tier0RuleEvaluator`] (the three
-//! deterministic rules) and [`MockRuleEvaluator`] (everything else), then
-//! merges the per-rule results back into the caller's rule order. Results are
-//! always one-per-rule, so downstream aggregation never has to guess which
-//! engine produced what.
+//! Splits batches between deterministic checks, shared local module heuristics,
+//! and the selected semantic engine, then merges results in caller order.
 
 use std::sync::Arc;
 
 use coderadar_domain::{CodeChunk, DomainError, RuleEvaluationResult, RuleSpec};
 use coderadar_usecases::{BoxFuture, SemanticRuleEvaluator};
 
+use crate::engine_rules::LOCAL_HEURISTIC_IDS;
 use crate::layer_map::LayerMap;
 use crate::mock::MockRuleEvaluator;
 use crate::tier0::Tier0RuleEvaluator;
@@ -22,6 +20,14 @@ pub struct RuleEngineRouter {
 }
 
 impl RuleEngineRouter {
+    /// Validate rule ownership, scope and declared engine before starting a scan.
+    ///
+    /// # Errors
+    /// Returns an invariant error for unknown, duplicate, or misconfigured rules.
+    pub fn validate_ownership(rules: &[RuleSpec]) -> Result<(), DomainError> {
+        crate::engine_rules::validate_ownership(rules)
+    }
+
     /// Create the router with the default Mock semantic engine.
     pub fn new(layer_map: Arc<LayerMap>) -> Self {
         Self {
@@ -108,6 +114,7 @@ impl SemanticRuleEvaluator for RuleEngineRouter {
         rules: &'a [RuleSpec],
     ) -> BoxFuture<'a, Result<Vec<RuleEvaluationResult>, DomainError>> {
         Box::pin(async move {
+            Self::validate_ownership(rules)?;
             let mut slots: Vec<Option<RuleEvaluationResult>> =
                 (0..rules.len()).map(|_| None).collect();
 
@@ -118,8 +125,25 @@ impl SemanticRuleEvaluator for RuleEngineRouter {
                 scatter_results(&mut slots, rules, &tier0_indices, results, "tier0")?;
             }
 
+            let local_indices: Vec<usize> = (0..rules.len())
+                .filter(|&index| LOCAL_HEURISTIC_IDS.contains(&rules[index].id.as_str()))
+                .collect();
+            if !local_indices.is_empty() {
+                let subset = subset_of(rules, &local_indices);
+                let results = MockRuleEvaluator::new()
+                    .evaluate_batch(chunks.clone(), &subset)
+                    .await?;
+                scatter_results(
+                    &mut slots,
+                    rules,
+                    &local_indices,
+                    results,
+                    "local heuristic",
+                )?;
+            }
+
             let semantic_indices: Vec<usize> = (0..rules.len())
-                .filter(|index| !tier0_indices.contains(index))
+                .filter(|index| !tier0_indices.contains(index) && !local_indices.contains(index))
                 .collect();
             if !semantic_indices.is_empty() {
                 let subset = subset_of(rules, &semantic_indices);
