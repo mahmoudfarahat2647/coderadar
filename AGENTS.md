@@ -63,3 +63,17 @@
 - Phase-gated delivery (`PHASES.md`): one branch + one PR per phase task, merge only when CI is green, never skip a gate. Phase 7's engine half is verified in CI; the clean-machine install on each OS is the open human step (the draft release holds the installers). Phase 8 (post-MVP: PR mode + Tier 2 auto-fix + signed OTA rules) is implemented in `feat/phase-8-post-mvp`; its live-provider smoke test is the open human step.
 - Code, comments, and commit messages are English; `README.md` is Arabic — keep it Arabic when editing. `coderadar-specs/*.md` are written in English (the Phase 0-5 documents) — follow the language of the document you edit.
 - Code comments cite spec sections (`CR-SPEC-02 §3`); before changing architecture or domain rules, read the matching `coderadar-specs/` document.
+
+## Agent skills
+
+### Issue tracker
+
+Track work in this repository's GitHub Issues using `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage roles and label names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use a single-context glossary and ADR layout when those documents exist. See `docs/agents/domain.md`.
